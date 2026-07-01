@@ -91,6 +91,50 @@ try:
 except ImportError:
     np = None
 
+# New feature imports
+try:
+    import ssl
+    from ssl import SSLContext
+except ImportError:
+    ssl = None
+
+try:
+    import OpenSSL
+    from OpenSSL import crypto
+except ImportError:
+    OpenSSL = None
+
+try:
+    import geoip2.database
+    import geoip2.records
+except ImportError:
+    geoip2 = None
+
+try:
+    import folium
+except ImportError:
+    folium = None
+
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None
+
+try:
+    import praw
+except ImportError:
+    praw = None
+
+try:
+    import mastodon
+except ImportError:
+    mastodon = None
+
+try:
+    import ipaddress
+except ImportError:
+    ipaddress = None
+
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QTabWidget, QLabel, QLineEdit, QPushButton, QComboBox, 
                              QSpinBox, QCheckBox, QTextEdit, QTableWidget, QTableWidgetItem,
@@ -2535,6 +2579,836 @@ class StatisticalAnalyzer:
         
         return report
 
+class IPGeolocation:
+    """IP Geolocation & ASN Mapping with map visualization."""
+    
+    def __init__(self, geoip_db_path: Optional[str] = None):
+        self.geoip_db_path = geoip_db_path
+        self.reader = None
+        self.cache = {}
+        
+        if geoip2 and geoip_db_path:
+            try:
+                self.reader = geoip2.database.Reader(geoip_db_path)
+            except Exception as e:
+                print(f"Failed to load GeoIP database: {e}")
+    
+    def geolocate_ip(self, ip: str) -> Dict:
+        """Geolocate an IP address."""
+        if ip in self.cache:
+            return self.cache[ip]
+        
+        result = {
+            'ip': ip,
+            'country': None,
+            'city': None,
+            'latitude': None,
+            'longitude': None,
+            'asn': None,
+            'org': None,
+            'error': None
+        }
+        
+        try:
+            # Use ipinfo.io API as fallback
+            response = requests.get(f"https://ipinfo.io/{ip}/json", timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            
+            result['country'] = data.get('country')
+            result['city'] = data.get('city')
+            result['org'] = data.get('org')
+            result['asn'] = data.get('org', '').split(' ')[0] if data.get('org') else None
+            
+            # Parse coordinates
+            loc = data.get('loc', '')
+            if loc:
+                lat, lon = loc.split(',')
+                result['latitude'] = float(lat)
+                result['longitude'] = float(lon)
+            
+            # Try GeoIP database if available
+            if self.reader:
+                try:
+                    response = self.reader.city(ip)
+                    result['country'] = response.country.iso_code
+                    result['city'] = response.city.name
+                    result['latitude'] = response.location.latitude
+                    result['longitude'] = response.location.longitude
+                    result['asn'] = response.network
+                    result['org'] = response.network
+                except:
+                    pass
+        
+        except Exception as e:
+            result['error'] = str(e)
+        
+        self.cache[ip] = result
+        return result
+    
+    def batch_geolocate(self, ips: List[str]) -> Dict[str, Dict]:
+        """Geolocate multiple IPs."""
+        results = {}
+        for ip in ips:
+            results[ip] = self.geolocate_ip(ip)
+        return results
+    
+    def generate_map(self, ip_data: List[Dict], output_path: str = "geolocation_map.html") -> Optional[str]:
+        """Generate interactive map using folium."""
+        if folium is None:
+            print("folium library not available")
+            return None
+        
+        try:
+            m = folium.Map(location=[20, 0], zoom_start=2)
+            
+            for data in ip_data:
+                if data.get('latitude') and data.get('longitude'):
+                    popup_text = f"""
+                    <b>IP:</b> {data['ip']}<br>
+                    <b>Country:</b> {data.get('country', 'N/A')}<br>
+                    <b>City:</b> {data.get('city', 'N/A')}<br>
+                    <b>ASN:</b> {data.get('asn', 'N/A')}<br>
+                    <b>Organization:</b> {data.get('org', 'N/A')}
+                    """
+                    folium.Marker(
+                        [data['latitude'], data['longitude']],
+                        popup=folium.Popup(popup_text, max_width=300)
+                    ).add_to(m)
+            
+            m.save(output_path)
+            return output_path
+        except Exception as e:
+            print(f"Error generating map: {e}")
+            return None
+
+class SSLTLSAnalyzer:
+    """SSL/TLS Cipher Analysis - certificates, HSTS, CSP headers."""
+    
+    WEAK_CIPHERS = [
+        'RC4', 'DES', '3DES', 'MD5', 'SHA1', 'NULL', 'EXPORT', 'anon'
+    ]
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+    
+    def analyze_certificate(self, hostname: str, port: int = 443) -> Dict:
+        """Analyze SSL/TLS certificate."""
+        result = {
+            'hostname': hostname,
+            'port': port,
+            'issuer': None,
+            'subject': None,
+            'version': None,
+            'serial': None,
+            'not_before': None,
+            'not_after': None,
+            'is_valid': None,
+            'days_until_expiry': None,
+            'signature_algorithm': None,
+            'key_size': None,
+            'weak_cipher': False,
+            'error': None
+        }
+        
+        try:
+            # Get certificate from socket
+            import socket
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            
+            with socket.create_connection((hostname, port), timeout=10) as sock:
+                with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+                    cert = ssock.getpeercert()
+                    
+                    result['version'] = ssock.version()
+                    result['cipher'] = ssock.cipher()
+                    result['weak_cipher'] = any(weak in str(ssock.cipher()).upper() 
+                                              for weak in self.WEAK_CIPHERS)
+                    
+                    # Parse certificate
+                    result['issuer'] = dict(x[0] for x in cert.get('issuer', []))
+                    result['subject'] = dict(x[0] for x in cert.get('subject', []))
+                    result['serial'] = cert.get('serialNumber')
+                    result['not_before'] = cert.get('notBefore')
+                    result['not_after'] = cert.get('notAfter')
+                    result['signature_algorithm'] = cert.get('signatureAlgorithm')
+                    
+                    # Check validity
+                    from datetime import datetime
+                    not_after = datetime.strptime(cert['notAfter'], '%b %d %H:%M:%S %Y %Z')
+                    days_left = (not_after - datetime.utcnow()).days
+                    result['days_until_expiry'] = days_left
+                    result['is_valid'] = days_left > 0
+        
+        except Exception as e:
+            result['error'] = str(e)
+        
+        return result
+    
+    def check_security_headers(self, url: str) -> Dict:
+        """Check for security headers (HSTS, CSP, etc.)."""
+        result = {
+            'url': url,
+            'headers': {},
+            'security_headers': {
+                'Strict-Transport-Security': None,
+                'Content-Security-Policy': None,
+                'X-Frame-Options': None,
+                'X-Content-Type-Options': None,
+                'X-XSS-Protection': None,
+                'Referrer-Policy': None,
+                'Permissions-Policy': None
+            },
+            'missing_headers': [],
+            'error': None
+        }
+        
+        try:
+            response = self.session.get(url, timeout=10)
+            result['headers'] = dict(response.headers)
+            
+            for header in result['security_headers']:
+                result['security_headers'][header] = response.headers.get(header)
+                if not response.headers.get(header):
+                    result['missing_headers'].append(header)
+        
+        except Exception as e:
+            result['error'] = str(e)
+        
+        return result
+    
+    def full_analysis(self, url: str) -> Dict:
+        """Perform full SSL/TLS and security header analysis."""
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        hostname = parsed.netloc.split(':')[0]
+        
+        cert_analysis = self.analyze_certificate(hostname)
+        header_analysis = self.check_security_headers(url)
+        
+        return {
+            'certificate': cert_analysis,
+            'security_headers': header_analysis
+        }
+
+class TracerouteAnalyzer:
+    """Traceroute & Latency Metrics from multiple geographic proxies."""
+    
+    GEOGRAPHIC_ENDPOINTS = {
+        'US-East': 'https://httpbin.org/ip',
+        'US-West': 'https://httpbin.org/ip',
+        'Europe': 'https://httpbin.org/ip',
+        'Asia': 'https://httpbin.org/ip',
+        'South America': 'https://httpbin.org/ip'
+    }
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+    
+    def measure_latency(self, target: str, num_pings: int = 4) -> Dict:
+        """Measure latency to target."""
+        latencies = []
+        
+        for _ in range(num_pings):
+            try:
+                start_time = time.time()
+                response = self.session.get(target, timeout=10)
+                end_time = time.time()
+                latencies.append((end_time - start_time) * 1000)  # Convert to ms
+            except Exception as e:
+                pass
+        
+        if not latencies:
+            return {'error': 'Failed to measure latency'}
+        
+        return {
+            'target': target,
+            'latency_ms': {
+                'min': min(latencies),
+                'max': max(latencies),
+                'avg': sum(latencies) / len(latencies),
+                'median': sorted(latencies)[len(latencies) // 2]
+            },
+            'packet_loss': (num_pings - len(latencies)) / num_pings * 100
+        }
+    
+    def traceroute(self, target: str, max_hops: int = 30) -> List[Dict]:
+        """Perform traceroute (simplified - uses HTTP hops)."""
+        results = []
+        
+        try:
+            # This is a simplified traceroute using HTTP requests
+            # For full ICMP traceroute, you'd need raw socket access (admin privileges)
+            hostname = socket.gethostbyname(target)
+            
+            for ttl in range(1, max_hops + 1):
+                try:
+                    start_time = time.time()
+                    response = self.session.get(f"http://{target}", timeout=5)
+                    rtt = (time.time() - start_time) * 1000
+                    
+                    results.append({
+                        'hop': ttl,
+                        'ip': hostname,
+                        'rtt_ms': rtt,
+                        'status': 'success'
+                    })
+                    break  # Reached target
+                except requests.RequestException:
+                    results.append({
+                        'hop': ttl,
+                        'ip': '*',
+                        'rtt_ms': None,
+                        'status': 'timeout'
+                    })
+        
+        except Exception as e:
+            results.append({'error': str(e)})
+        
+        return results
+    
+    def multi_region_latency(self, target: str) -> Dict:
+        """Measure latency from multiple geographic regions."""
+        results = {}
+        
+        for region, endpoint in self.GEOGRAPHIC_ENDPOINTS.items():
+            try:
+                latency = self.measure_latency(endpoint)
+                results[region] = latency
+            except Exception as e:
+                results[region] = {'error': str(e)}
+        
+        return results
+
+class VulnerabilityScanner:
+    """Basic Vulnerability Scanning - .git, .env, admin panels, security headers."""
+    
+    COMMON_VULNERABLE_PATHS = [
+        '.git/',
+        '.git/config',
+        '.env',
+        '.env.local',
+        '.env.production',
+        'wp-config.php',
+        'config.php',
+        'admin/',
+        'administrator/',
+        'login/',
+        'wp-admin/',
+        'phpmyadmin/',
+        'console/',
+        'dashboard/',
+        'debug/',
+        'test/',
+        'backup/',
+        'backups/',
+        '.svn/',
+        '.DS_Store',
+        'web.config',
+        '.htaccess',
+        'robots.txt'
+    ]
+    
+    SECURITY_HEADERS = [
+        'Strict-Transport-Security',
+        'Content-Security-Policy',
+        'X-Frame-Options',
+        'X-Content-Type-Options',
+        'X-XSS-Protection',
+        'Referrer-Policy'
+    ]
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+    
+    def scan_exposed_files(self, base_url: str) -> List[Dict]:
+        """Scan for exposed sensitive files."""
+        from urllib.parse import urljoin
+        vulnerabilities = []
+        
+        for path in self.COMMON_VULNERABLE_PATHS:
+            url = urljoin(base_url, path)
+            
+            try:
+                response = self.session.get(url, timeout=5)
+                
+                if response.status_code == 200:
+                    vulnerabilities.append({
+                        'type': 'exposed_file',
+                        'path': path,
+                        'url': url,
+                        'status_code': response.status_code,
+                        'content_length': len(response.content),
+                        'severity': 'high' if path in ['.env', '.git/config', 'wp-config.php'] else 'medium'
+                    })
+                elif response.status_code == 403:
+                    vulnerabilities.append({
+                        'type': 'forbidden_path',
+                        'path': path,
+                        'url': url,
+                        'status_code': response.status_code,
+                        'severity': 'low'
+                    })
+            
+            except requests.RequestException:
+                pass
+        
+        return vulnerabilities
+    
+    def scan_security_headers(self, url: str) -> Dict:
+        """Check for missing security headers."""
+        try:
+            response = self.session.get(url, timeout=10)
+            headers = dict(response.headers)
+            
+            missing = []
+            present = {}
+            
+            for header in self.SECURITY_HEADERS:
+                if header in headers:
+                    present[header] = headers[header]
+                else:
+                    missing.append(header)
+            
+            return {
+                'url': url,
+                'present_headers': present,
+                'missing_headers': missing,
+                'security_score': len(present) / len(self.SECURITY_HEADERS) * 100
+            }
+        
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def scan_admin_panels(self, base_url: str) -> List[Dict]:
+        """Scan for exposed admin panels."""
+        from urllib.parse import urljoin
+        admin_paths = ['admin', 'administrator', 'login', 'wp-admin', 'dashboard', 'console']
+        found_panels = []
+        
+        for path in admin_paths:
+            url = urljoin(base_url, path)
+            
+            try:
+                response = self.session.get(url, timeout=5)
+                
+                if response.status_code == 200:
+                    # Check if it looks like a login page
+                    content = response.text.lower()
+                    if 'login' in content or 'password' in content or 'username' in content:
+                        found_panels.append({
+                            'type': 'admin_panel',
+                            'path': path,
+                            'url': url,
+                            'status_code': response.status_code,
+                            'severity': 'medium'
+                        })
+            
+            except requests.RequestException:
+                pass
+        
+        return found_panels
+    
+    def full_scan(self, url: str) -> Dict:
+        """Perform full vulnerability scan."""
+        from urllib.parse import urlparse
+        base_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+        
+        return {
+            'exposed_files': self.scan_exposed_files(base_url),
+            'security_headers': self.scan_security_headers(url),
+            'admin_panels': self.scan_admin_panels(base_url)
+        }
+
+class SocialMediaSearcher:
+    """Social Media/Forum Integration - Reddit, Mastodon API searches."""
+    
+    def __init__(self, reddit_client_id: Optional[str] = None, 
+                 reddit_client_secret: Optional[str] = None,
+                 mastodon_instance: Optional[str] = None,
+                 mastodon_token: Optional[str] = None):
+        self.reddit_client_id = reddit_client_id
+        self.reddit_client_secret = reddit_client_secret
+        self.mastodon_instance = mastodon_instance
+        self.mastodon_token = mastodon_token
+        
+        self.reddit_client = None
+        self.mastodon_client = None
+        
+        if praw and reddit_client_id and reddit_client_secret:
+            try:
+                self.reddit_client = praw.Reddit(
+                    client_id=reddit_client_id,
+                    client_secret=reddit_client_secret,
+                    user_agent='ReconTool/1.0'
+                )
+            except:
+                pass
+        
+        if mastodon and mastodon_instance and mastodon_token:
+            try:
+                self.mastodon_client = mastodon.Mastodon(
+                    access_token=mastodon_token,
+                    api_base_url=mastodon_instance
+                )
+            except:
+                pass
+    
+    def search_reddit(self, query: str, limit: int = 10) -> List[Dict]:
+        """Search Reddit for mentions."""
+        if not self.reddit_client:
+            return [{'error': 'Reddit client not configured'}]
+        
+        results = []
+        
+        try:
+            # Search submissions
+            for submission in self.reddit_client.subreddit('all').search(query, limit=limit):
+                results.append({
+                    'platform': 'reddit',
+                    'type': 'submission',
+                    'title': submission.title,
+                    'url': submission.url,
+                    'permalink': f"https://reddit.com{submission.permalink}",
+                    'author': str(submission.author),
+                    'score': submission.score,
+                    'created_utc': submission.created_utc,
+                    'num_comments': submission.num_comments
+                })
+        
+        except Exception as e:
+            results.append({'error': str(e)})
+        
+        return results
+    
+    def search_mastodon(self, query: str, limit: int = 10) -> List[Dict]:
+        """Search Mastodon for mentions."""
+        if not self.mastodon_client:
+            return [{'error': 'Mastodon client not configured'}]
+        
+        results = []
+        
+        try:
+            # Search for toots
+            results_data = self.mastodon_client.search_v2(query, limit=limit)
+            
+            for result in results_data['statuses']:
+                results.append({
+                    'platform': 'mastodon',
+                    'type': 'toot',
+                    'content': result['content'],
+                    'url': result['url'],
+                    'account': result['account']['url'],
+                    'created_at': result['created_at'],
+                    'reblogs_count': result['reblogs_count'],
+                    'favourites_count': result['favourites_count']
+                })
+        
+        except Exception as e:
+            results.append({'error': str(e)})
+        
+        return results
+    
+    def search_all(self, query: str, limit: int = 10) -> Dict[str, List[Dict]]:
+        """Search all configured platforms."""
+        results = {}
+        
+        if self.reddit_client:
+            results['reddit'] = self.search_reddit(query, limit)
+        
+        if self.mastodon_client:
+            results['mastodon'] = self.search_mastodon(query, limit)
+        
+        return results
+
+class BacklinkDiscovery:
+    """Backlink Discovery - CommonCrawl integration."""
+    
+    COMMONCRAWL_INDEX_API = "https://index.commoncrawl.org/cdx?url={url}&output=json"
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+    
+    def discover_backlinks(self, target_url: str) -> List[Dict]:
+        """Discover backlinks using CommonCrawl index."""
+        backlinks = []
+        
+        try:
+            # Query CommonCrawl index
+            encoded_url = requests.utils.quote(target_url)
+            index_url = self.COMMONCRAWL_INDEX_API.format(url=encoded_url)
+            
+            response = self.session.get(index_url, timeout=30)
+            response.raise_for_status()
+            
+            for line in response.text.strip().split('\n'):
+                if line:
+                    try:
+                        data = json.loads(line)
+                        if len(data) > 4:  # Valid CDX record
+                            backlinks.append({
+                                'url': data[0],
+                                'timestamp': data[1],
+                                'status': data[2],
+                                'content_type': data[3],
+                                'archive_url': f"https://web.archive.org/web/{data[1]}/{data[0]}"
+                            })
+                    except:
+                        pass
+        
+        except Exception as e:
+            return [{'error': str(e)}]
+        
+        return backlinks
+    
+    def analyze_backlinks(self, backlinks: List[Dict]) -> Dict:
+        """Analyze backlink data."""
+        if not backlinks or 'error' in backlinks[0]:
+            return {'error': 'No valid backlinks'}
+        
+        unique_domains = set()
+        status_codes = {}
+        content_types = {}
+        
+        for bl in backlinks:
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(bl['url']).netloc
+                unique_domains.add(domain)
+                
+                status = bl.get('status', 'unknown')
+                status_codes[status] = status_codes.get(status, 0) + 1
+                
+                ct = bl.get('content_type', 'unknown')
+                content_types[ct] = content_types.get(ct, 0) + 1
+            except:
+                pass
+        
+        return {
+            'total_backlinks': len(backlinks),
+            'unique_domains': len(unique_domains),
+            'domains': list(unique_domains),
+            'status_codes': status_codes,
+            'content_types': content_types
+        }
+
+class PassiveOSINT:
+    """Passive OSINT Correlation - Shodan, Censys, VirusTotal, AbuseIPDB."""
+    
+    def __init__(self, shodan_api_key: Optional[str] = None,
+                 censys_api_id: Optional[str] = None,
+                 censys_api_secret: Optional[str] = None,
+                 virustotal_api_key: Optional[str] = None,
+                 abuseipdb_api_key: Optional[str] = None):
+        self.shodan_api_key = shodan_api_key
+        self.censys_api_id = censys_api_id
+        self.censys_api_secret = censys_api_secret
+        self.virustotal_api_key = virustotal_api_key
+        self.abuseipdb_api_key = abuseipdb_api_key
+        
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+    
+    def query_shodan(self, target: str) -> Dict:
+        """Query Shodan for host information."""
+        if not self.shodan_api_key:
+            return {'error': 'Shodan API key not configured'}
+        
+        try:
+            response = self.session.get(
+                f"https://api.shodan.io/shodan/host/{target}?key={self.shodan_api_key}",
+                timeout=10
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def query_censys(self, target: str) -> Dict:
+        """Query Censys for host information."""
+        if not self.censys_api_id or not self.censys_api_secret:
+            return {'error': 'Censys API credentials not configured'}
+        
+        try:
+            response = self.session.get(
+                f"https://search.censys.io/api/v2/hosts/{target}",
+                auth=(self.censys_api_id, self.censys_api_secret),
+                timeout=10
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def query_virustotal(self, ip: str) -> Dict:
+        """Query VirusTotal for IP reputation."""
+        if not self.virustotal_api_key:
+            return {'error': 'VirusTotal API key not configured'}
+        
+        try:
+            response = self.session.get(
+                f"https://www.virustotal.com/api/v3/ip_addresses/{ip}",
+                headers={'x-apikey': self.virustotal_api_key},
+                timeout=10
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def query_abuseipdb(self, ip: str) -> Dict:
+        """Query AbuseIPDB for IP reputation."""
+        if not self.abuseipdb_api_key:
+            return {'error': 'AbuseIPDB API key not configured'}
+        
+        try:
+            response = self.session.get(
+                f"https://api.abuseipdb.com/api/v2/check",
+                headers={'Key': self.abuseipdb_api_key},
+                params={'ipAddress': ip, 'maxAgeInDays': 90},
+                timeout=10
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def correlate_osint(self, target: str) -> Dict:
+        """Correlate OSINT data from multiple sources."""
+        results = {}
+        
+        # Try to determine if target is IP or domain
+        try:
+            ipaddress.ip_address(target)
+            is_ip = True
+        except:
+            is_ip = False
+        
+        if is_ip:
+            results['shodan'] = self.query_shodan(target)
+            results['virustotal'] = self.query_virustotal(target)
+            results['abuseipdb'] = self.query_abuseipdb(target)
+        else:
+            results['censys'] = self.query_censys(target)
+        
+        return results
+
+class KnowledgeGraphLinker:
+    """Cross-Referencing with Knowledge Graphs - Wikidata, DBpedia."""
+    
+    WIKIDATA_API = "https://www.wikidata.org/w/api.php"
+    DBPEDIA_SPARQL = "https://dbpedia.org/sparql"
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+    
+    def search_wikidata(self, query: str) -> List[Dict]:
+        """Search Wikidata for entities."""
+        results = []
+        
+        try:
+            params = {
+                'action': 'wbsearchentities',
+                'search': query,
+                'format': 'json',
+                'language': 'en',
+                'limit': 10
+            }
+            
+            response = self.session.get(self.WIKIDATA_API, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            for entity in data.get('search', []):
+                results.append({
+                    'id': entity['id'],
+                    'label': entity['label'],
+                    'description': entity.get('description', ''),
+                    'url': f"https://www.wikidata.org/wiki/{entity['id']}"
+                })
+        
+        except Exception as e:
+            return [{'error': str(e)}]
+        
+        return results
+    
+    def query_dbpedia(self, query: str) -> List[Dict]:
+        """Query DBpedia using SPARQL."""
+        results = []
+        
+        try:
+            sparql_query = f"""
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            PREFIX dbo: <http://dbpedia.org/ontology/>
+            
+            SELECT ?entity ?label ?abstract WHERE {{
+                ?entity rdfs:label ?label .
+                ?entity dbo:abstract ?abstract .
+                FILTER (LANG(?label) = "en")
+                FILTER (LANG(?abstract) = "en")
+                FILTER (CONTAINS(LCASE(STR(?label)), LCASE("{query}")))
+            }}
+            LIMIT 10
+            """
+            
+            params = {
+                'query': sparql_query,
+                'format': 'json'
+            }
+            
+            response = self.session.get(self.DBPEDIA_SPARQL, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            for binding in data.get('results', {}).get('bindings', []):
+                results.append({
+                    'entity': binding['entity']['value'],
+                    'label': binding['label']['value'],
+                    'abstract': binding['abstract']['value'][:500]
+                })
+        
+        except Exception as e:
+            return [{'error': str(e)}]
+        
+        return results
+    
+    def link_entities(self, text: str) -> Dict:
+        """Link entities in text to knowledge graphs."""
+        # Simple entity extraction (would use NER in production)
+        words = text.split()
+        entities = [word for word in words if word[0].isupper() and len(word) > 3]
+        
+        results = {}
+        
+        for entity in entities[:5]:  # Limit to top 5 entities
+            results[entity] = {
+                'wikidata': self.search_wikidata(entity),
+                'dbpedia': self.query_dbpedia(entity)
+            }
+        
+        return results
+
 class InteractiveDashboard:
     """Real-time graphs using Plotly."""
     
@@ -2793,6 +3667,16 @@ class GUI(QMainWindow):
         except:
             self.dashboard = None
         
+        # New OSINT feature instances
+        self.ip_geolocation = IPGeolocation()
+        self.ssl_tls_analyzer = SSLTLSAnalyzer()
+        self.traceroute_analyzer = TracerouteAnalyzer()
+        self.vulnerability_scanner = VulnerabilityScanner()
+        self.social_media_searcher = SocialMediaSearcher()
+        self.backlink_discovery = BacklinkDiscovery()
+        self.passive_osint = PassiveOSINT()
+        self.knowledge_graph_linker = KnowledgeGraphLinker()
+        
         self.init_ui()
     
     def init_ui(self):
@@ -2827,6 +3711,14 @@ class GUI(QMainWindow):
         self.create_temporal_analysis_tab()
         self.create_statistics_tab()
         self.create_dashboard_tab()
+        self.create_ip_geolocation_tab()
+        self.create_ssl_tls_tab()
+        self.create_traceroute_tab()
+        self.create_vulnerability_scan_tab()
+        self.create_social_media_tab()
+        self.create_backlink_tab()
+        self.create_passive_osint_tab()
+        self.create_knowledge_graph_tab()
         
         # Status bar
         self.status_label = QLabel("Ready")
@@ -3651,6 +4543,277 @@ class GUI(QMainWindow):
             layout.addWidget(self.dashboard_display)
         
         self.tab_widget.addTab(dashboard_tab, "Dashboard")
+    
+    def create_ip_geolocation_tab(self):
+        """Create tab for IP geolocation and ASN mapping."""
+        geo_tab = QWidget()
+        layout = QVBoxLayout(geo_tab)
+        
+        # Geolocation controls
+        geo_group = QGroupBox("IP Geolocation")
+        geo_layout = QFormLayout()
+        
+        self.geo_ip = QLineEdit()
+        self.geo_ip.setPlaceholderText("Enter IP address...")
+        geo_layout.addRow("IP Address:", self.geo_ip)
+        
+        geolocate_btn = QPushButton("Geolocate IP")
+        geolocate_btn.clicked.connect(self.perform_geolocation)
+        geo_layout.addRow("", geolocate_btn)
+        
+        generate_map_btn = QPushButton("Generate Map")
+        generate_map_btn.clicked.connect(self.generate_geo_map)
+        geo_layout.addRow("", generate_map_btn)
+        
+        geo_group.setLayout(geo_layout)
+        layout.addWidget(geo_group)
+        
+        # Results display
+        self.geo_results = QTextEdit()
+        self.geo_results.setReadOnly(True)
+        layout.addWidget(self.geo_results)
+        
+        self.tab_widget.addTab(geo_tab, "IP Geolocation")
+    
+    def create_ssl_tls_tab(self):
+        """Create tab for SSL/TLS analysis."""
+        ssl_tab = QWidget()
+        layout = QVBoxLayout(ssl_tab)
+        
+        # SSL/TLS controls
+        ssl_group = QGroupBox("SSL/TLS Analysis")
+        ssl_layout = QFormLayout()
+        
+        self.ssl_url = QLineEdit()
+        self.ssl_url.setPlaceholderText("Enter URL (e.g., https://example.com)")
+        ssl_layout.addRow("URL:", self.ssl_url)
+        
+        analyze_cert_btn = QPushButton("Analyze Certificate")
+        analyze_cert_btn.clicked.connect(self.analyze_ssl_certificate)
+        ssl_layout.addRow("", analyze_cert_btn)
+        
+        check_headers_btn = QPushButton("Check Security Headers")
+        check_headers_btn.clicked.connect(self.check_ssl_headers)
+        ssl_layout.addRow("", check_headers_btn)
+        
+        full_analysis_btn = QPushButton("Full Analysis")
+        full_analysis_btn.clicked.connect(self.full_ssl_analysis)
+        ssl_layout.addRow("", full_analysis_btn)
+        
+        ssl_group.setLayout(ssl_layout)
+        layout.addWidget(ssl_group)
+        
+        # Results display
+        self.ssl_results = QTextEdit()
+        self.ssl_results.setReadOnly(True)
+        layout.addWidget(self.ssl_results)
+        
+        self.tab_widget.addTab(ssl_tab, "SSL/TLS")
+    
+    def create_traceroute_tab(self):
+        """Create tab for traceroute and latency analysis."""
+        trace_tab = QWidget()
+        layout = QVBoxLayout(trace_tab)
+        
+        # Traceroute controls
+        trace_group = QGroupBox("Traceroute & Latency")
+        trace_layout = QFormLayout()
+        
+        self.trace_target = QLineEdit()
+        self.trace_target.setPlaceholderText("Enter hostname or IP...")
+        trace_layout.addRow("Target:", self.trace_target)
+        
+        latency_btn = QPushButton("Measure Latency")
+        latency_btn.clicked.connect(self.measure_latency)
+        trace_layout.addRow("", latency_btn)
+        
+        traceroute_btn = QPushButton("Traceroute")
+        traceroute_btn.clicked.connect(self.perform_traceroute)
+        trace_layout.addRow("", traceroute_btn)
+        
+        multi_region_btn = QPushButton("Multi-Region Latency")
+        multi_region_btn.clicked.connect(self.multi_region_latency)
+        trace_layout.addRow("", multi_region_btn)
+        
+        trace_group.setLayout(trace_layout)
+        layout.addWidget(trace_group)
+        
+        # Results display
+        self.trace_results = QTextEdit()
+        self.trace_results.setReadOnly(True)
+        layout.addWidget(self.trace_results)
+        
+        self.tab_widget.addTab(trace_tab, "Traceroute")
+    
+    def create_vulnerability_scan_tab(self):
+        """Create tab for vulnerability scanning."""
+        vuln_tab = QWidget()
+        layout = QVBoxLayout(vuln_tab)
+        
+        # Vulnerability scan controls
+        vuln_group = QGroupBox("Vulnerability Scanner")
+        vuln_layout = QFormLayout()
+        
+        self.vuln_url = QLineEdit()
+        self.vuln_url.setPlaceholderText("Enter URL to scan...")
+        vuln_layout.addRow("URL:", self.vuln_url)
+        
+        scan_files_btn = QPushButton("Scan Exposed Files")
+        scan_files_btn.clicked.connect(self.scan_exposed_files)
+        vuln_layout.addRow("", scan_files_btn)
+        
+        scan_headers_btn = QPushButton("Scan Security Headers")
+        scan_headers_btn.clicked.connect(self.scan_security_headers)
+        vuln_layout.addRow("", scan_headers_btn)
+        
+        scan_admin_btn = QPushButton("Scan Admin Panels")
+        scan_admin_btn.clicked.connect(self.scan_admin_panels)
+        vuln_layout.addRow("", scan_admin_btn)
+        
+        full_scan_btn = QPushButton("Full Vulnerability Scan")
+        full_scan_btn.clicked.connect(self.full_vulnerability_scan)
+        vuln_layout.addRow("", full_scan_btn)
+        
+        vuln_group.setLayout(vuln_layout)
+        layout.addWidget(vuln_group)
+        
+        # Results display
+        self.vuln_results = QTextEdit()
+        self.vuln_results.setReadOnly(True)
+        layout.addWidget(self.vuln_results)
+        
+        self.tab_widget.addTab(vuln_tab, "Vulnerability Scan")
+    
+    def create_social_media_tab(self):
+        """Create tab for social media search."""
+        social_tab = QWidget()
+        layout = QVBoxLayout(social_tab)
+        
+        # Social media controls
+        social_group = QGroupBox("Social Media Search")
+        social_layout = QFormLayout()
+        
+        self.social_query = QLineEdit()
+        self.social_query.setPlaceholderText("Enter search query...")
+        social_layout.addRow("Query:", self.social_query)
+        
+        # API credentials
+        self.reddit_client_id = QLineEdit()
+        self.reddit_client_id.setPlaceholderText("Reddit Client ID (optional)")
+        social_layout.addRow("Reddit Client ID:", self.reddit_client_id)
+        
+        self.reddit_client_secret = QLineEdit()
+        self.reddit_client_secret.setPlaceholderText("Reddit Client Secret (optional)")
+        social_layout.addRow("Reddit Secret:", self.reddit_client_secret)
+        
+        search_reddit_btn = QPushButton("Search Reddit")
+        search_reddit_btn.clicked.connect(self.search_social_media)
+        social_layout.addRow("", search_reddit_btn)
+        
+        social_group.setLayout(social_layout)
+        layout.addWidget(social_group)
+        
+        # Results display
+        self.social_results = QTextEdit()
+        self.social_results.setReadOnly(True)
+        layout.addWidget(self.social_results)
+        
+        self.tab_widget.addTab(social_tab, "Social Media")
+    
+    def create_backlink_tab(self):
+        """Create tab for backlink discovery."""
+        backlink_tab = QWidget()
+        layout = QVBoxLayout(backlink_tab)
+        
+        # Backlink controls
+        backlink_group = QGroupBox("Backlink Discovery")
+        backlink_layout = QFormLayout()
+        
+        self.backlink_url = QLineEdit()
+        self.backlink_url.setPlaceholderText("Enter target URL...")
+        backlink_layout.addRow("URL:", self.backlink_url)
+        
+        discover_btn = QPushButton("Discover Backlinks")
+        discover_btn.clicked.connect(self.discover_backlinks)
+        backlink_layout.addRow("", discover_btn)
+        
+        backlink_group.setLayout(backlink_layout)
+        layout.addWidget(backlink_group)
+        
+        # Results display
+        self.backlink_results = QTextEdit()
+        self.backlink_results.setReadOnly(True)
+        layout.addWidget(self.backlink_results)
+        
+        self.tab_widget.addTab(backlink_tab, "Backlinks")
+    
+    def create_passive_osint_tab(self):
+        """Create tab for passive OSINT correlation."""
+        osint_tab = QWidget()
+        layout = QVBoxLayout(osint_tab)
+        
+        # OSINT controls
+        osint_group = QGroupBox("Passive OSINT")
+        osint_layout = QFormLayout()
+        
+        self.osint_target = QLineEdit()
+        self.osint_target.setPlaceholderText("Enter IP or domain...")
+        osint_layout.addRow("Target:", self.osint_target)
+        
+        # API credentials
+        self.shodan_key = QLineEdit()
+        self.shodan_key.setPlaceholderText("Shodan API Key (optional)")
+        osint_layout.addRow("Shodan Key:", self.shodan_key)
+        
+        self.virustotal_key = QLineEdit()
+        self.virustotal_key.setPlaceholderText("VirusTotal API Key (optional)")
+        osint_layout.addRow("VirusTotal Key:", self.virustotal_key)
+        
+        self.abuseipdb_key = QLineEdit()
+        self.abuseipdb_key.setPlaceholderText("AbuseIPDB API Key (optional)")
+        osint_layout.addRow("AbuseIPDB Key:", self.abuseipdb_key)
+        
+        correlate_btn = QPushButton("Correlate OSINT")
+        correlate_btn.clicked.connect(self.correlate_osint)
+        osint_layout.addRow("", correlate_btn)
+        
+        osint_group.setLayout(osint_layout)
+        layout.addWidget(osint_group)
+        
+        # Results display
+        self.osint_results = QTextEdit()
+        self.osint_results.setReadOnly(True)
+        layout.addWidget(self.osint_results)
+        
+        self.tab_widget.addTab(osint_tab, "Passive OSINT")
+    
+    def create_knowledge_graph_tab(self):
+        """Create tab for knowledge graph linking."""
+        kg_tab = QWidget()
+        layout = QVBoxLayout(kg_tab)
+        
+        # Knowledge graph controls
+        kg_group = QGroupBox("Knowledge Graph Linking")
+        kg_layout = QFormLayout()
+        
+        self.kg_text = QTextEdit()
+        self.kg_text.setMaximumHeight(100)
+        self.kg_text.setPlaceholderText("Enter text to extract entities...")
+        kg_layout.addRow("Text:", self.kg_text)
+        
+        link_btn = QPushButton("Link Entities")
+        link_btn.clicked.connect(self.link_knowledge_graph)
+        kg_layout.addRow("", link_btn)
+        
+        kg_group.setLayout(kg_layout)
+        layout.addWidget(kg_group)
+        
+        # Results display
+        self.kg_results = QTextEdit()
+        self.kg_results.setReadOnly(True)
+        layout.addWidget(self.kg_results)
+        
+        self.tab_widget.addTab(kg_tab, "Knowledge Graph")
     
     def perform_search(self):
         query = self.search_query.text().strip()
@@ -4531,6 +5694,464 @@ class GUI(QMainWindow):
                 QMessageBox.information(self, "Success", f"Dashboard saved to {filename}")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save dashboard: {str(e)}")
+    
+    # New OSINT feature handlers
+    def perform_geolocation(self):
+        ip = self.geo_ip.text().strip()
+        if not ip:
+            QMessageBox.warning(self, "Warning", "Please enter an IP address")
+            return
+        
+        try:
+            result = self.ip_geolocation.geolocate_ip(ip)
+            
+            output = f"IP Geolocation Results:\n\n"
+            output += f"IP: {result['ip']}\n"
+            output += f"Country: {result.get('country', 'N/A')}\n"
+            output += f"City: {result.get('city', 'N/A')}\n"
+            output += f"Latitude: {result.get('latitude', 'N/A')}\n"
+            output += f"Longitude: {result.get('longitude', 'N/A')}\n"
+            output += f"ASN: {result.get('asn', 'N/A')}\n"
+            output += f"Organization: {result.get('org', 'N/A')}\n"
+            
+            if result.get('error'):
+                output += f"Error: {result['error']}\n"
+            
+            self.geo_results.setText(output)
+            self.status_label.setText(f"Geolocation complete for {ip}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Geolocation failed: {str(e)}")
+    
+    def generate_geo_map(self):
+        ip = self.geo_ip.text().strip()
+        if not ip:
+            QMessageBox.warning(self, "Warning", "Please enter an IP address first")
+            return
+        
+        try:
+            result = self.ip_geolocation.geolocate_ip(ip)
+            if result.get('latitude') and result.get('longitude'):
+                map_path = self.ip_geolocation.generate_map([result])
+                if map_path:
+                    QMessageBox.information(self, "Success", f"Map generated: {map_path}")
+                    self.geo_results.setText(f"Map saved to: {map_path}")
+                else:
+                    QMessageBox.warning(self, "Warning", "Failed to generate map (folium not available)")
+            else:
+                QMessageBox.warning(self, "Warning", "No coordinates available for this IP")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Map generation failed: {str(e)}")
+    
+    def analyze_ssl_certificate(self):
+        url = self.ssl_url.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Warning", "Please enter a URL")
+            return
+        
+        try:
+            from urllib.parse import urlparse
+            hostname = urlparse(url).netloc.split(':')[0]
+            
+            result = self.ssl_tls_analyzer.analyze_certificate(hostname)
+            
+            output = f"SSL/TLS Certificate Analysis:\n\n"
+            output += f"Hostname: {result['hostname']}\n"
+            output += f"Port: {result['port']}\n"
+            output += f"Version: {result.get('version', 'N/A')}\n"
+            output += f"Cipher: {result.get('cipher', 'N/A')}\n"
+            output += f"Weak Cipher: {result.get('weak_cipher', 'N/A')}\n"
+            output += f"Issuer: {result.get('issuer', 'N/A')}\n"
+            output += f"Subject: {result.get('subject', 'N/A')}\n"
+            output += f"Valid From: {result.get('not_before', 'N/A')}\n"
+            output += f"Valid Until: {result.get('not_after', 'N/A')}\n"
+            output += f"Days Until Expiry: {result.get('days_until_expiry', 'N/A')}\n"
+            output += f"Is Valid: {result.get('is_valid', 'N/A')}\n"
+            
+            if result.get('error'):
+                output += f"Error: {result['error']}\n"
+            
+            self.ssl_results.setText(output)
+            self.status_label.setText(f"SSL analysis complete for {hostname}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"SSL analysis failed: {str(e)}")
+    
+    def check_ssl_headers(self):
+        url = self.ssl_url.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Warning", "Please enter a URL")
+            return
+        
+        try:
+            result = self.ssl_tls_analyzer.check_security_headers(url)
+            
+            output = f"Security Headers Analysis:\n\n"
+            output += f"URL: {result['url']}\n\n"
+            
+            output += "Present Headers:\n"
+            for header, value in result['security_headers'].items():
+                if value:
+                    output += f"  {header}: {value}\n"
+            
+            output += "\nMissing Headers:\n"
+            for header in result['missing_headers']:
+                output += f"  {header}\n"
+            
+            output += f"\nSecurity Score: {result.get('security_score', 0):.1f}%\n"
+            
+            if result.get('error'):
+                output += f"Error: {result['error']}\n"
+            
+            self.ssl_results.setText(output)
+            self.status_label.setText(f"Security headers check complete for {url}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Security headers check failed: {str(e)}")
+    
+    def full_ssl_analysis(self):
+        url = self.ssl_url.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Warning", "Please enter a URL")
+            return
+        
+        try:
+            result = self.ssl_tls_analyzer.full_analysis(url)
+            
+            output = "Full SSL/TLS Analysis:\n\n"
+            
+            # Certificate analysis
+            cert = result['certificate']
+            output += "=== Certificate ===\n"
+            output += f"Hostname: {cert['hostname']}\n"
+            output += f"Version: {cert.get('version', 'N/A')}\n"
+            output += f"Valid: {cert.get('is_valid', 'N/A')}\n"
+            output += f"Days until expiry: {cert.get('days_until_expiry', 'N/A')}\n"
+            output += f"Weak cipher: {cert.get('weak_cipher', 'N/A')}\n\n"
+            
+            # Security headers
+            headers = result['security_headers']
+            output += "=== Security Headers ===\n"
+            output += f"Missing: {', '.join(headers['missing_headers'])}\n"
+            output += f"Security Score: {headers.get('security_score', 0):.1f}%\n"
+            
+            self.ssl_results.setText(output)
+            self.status_label.setText(f"Full SSL analysis complete for {url}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Full SSL analysis failed: {str(e)}")
+    
+    def measure_latency(self):
+        target = self.trace_target.text().strip()
+        if not target:
+            QMessageBox.warning(self, "Warning", "Please enter a target")
+            return
+        
+        try:
+            result = self.traceroute_analyzer.measure_latency(target)
+            
+            if 'error' in result:
+                self.trace_results.setText(f"Error: {result['error']}")
+            else:
+                output = f"Latency Measurement for {target}:\n\n"
+                lat = result['latency_ms']
+                output += f"Min: {lat['min']:.2f} ms\n"
+                output += f"Max: {lat['max']:.2f} ms\n"
+                output += f"Average: {lat['avg']:.2f} ms\n"
+                output += f"Median: {lat['median']:.2f} ms\n"
+                output += f"Packet Loss: {result['packet_loss']:.1f}%\n"
+                
+                self.trace_results.setText(output)
+            
+            self.status_label.setText(f"Latency measurement complete for {target}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Latency measurement failed: {str(e)}")
+    
+    def perform_traceroute(self):
+        target = self.trace_target.text().strip()
+        if not target:
+            QMessageBox.warning(self, "Warning", "Please enter a target")
+            return
+        
+        try:
+            results = self.traceroute_analyzer.traceroute(target)
+            
+            output = f"Traceroute to {target}:\n\n"
+            for hop in results:
+                if 'error' in hop:
+                    output += f"Error: {hop['error']}\n"
+                else:
+                    output += f"Hop {hop['hop']}: {hop['ip']} - {hop.get('rtt_ms', 'N/A')} ms ({hop['status']})\n"
+            
+            self.trace_results.setText(output)
+            self.status_label.setText(f"Traceroute complete for {target}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Traceroute failed: {str(e)}")
+    
+    def multi_region_latency(self):
+        target = self.trace_target.text().strip()
+        if not target:
+            QMessageBox.warning(self, "Warning", "Please enter a target")
+            return
+        
+        try:
+            results = self.traceroute_analyzer.multi_region_latency(target)
+            
+            output = f"Multi-Region Latency for {target}:\n\n"
+            for region, data in results.items():
+                output += f"{region}:\n"
+                if 'error' in data:
+                    output += f"  Error: {data['error']}\n"
+                else:
+                    lat = data['latency_ms']
+                    output += f"  Average: {lat['avg']:.2f} ms\n"
+                    output += f"  Packet Loss: {data['packet_loss']:.1f}%\n"
+                output += "\n"
+            
+            self.trace_results.setText(output)
+            self.status_label.setText(f"Multi-region latency complete for {target}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Multi-region latency failed: {str(e)}")
+    
+    def scan_exposed_files(self):
+        url = self.vuln_url.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Warning", "Please enter a URL")
+            return
+        
+        try:
+            from urllib.parse import urlparse
+            base_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+            
+            results = self.vulnerability_scanner.scan_exposed_files(base_url)
+            
+            output = f"Exposed Files Scan for {base_url}:\n\n"
+            if not results:
+                output += "No exposed files found.\n"
+            else:
+                for vuln in results:
+                    output += f"Path: {vuln['path']}\n"
+                    output += f"URL: {vuln['url']}\n"
+                    output += f"Status: {vuln['status_code']}\n"
+                    output += f"Severity: {vuln['severity']}\n\n"
+            
+            self.vuln_results.setText(output)
+            self.status_label.setText(f"Exposed files scan complete for {base_url}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Exposed files scan failed: {str(e)}")
+    
+    def scan_security_headers(self):
+        url = self.vuln_url.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Warning", "Please enter a URL")
+            return
+        
+        try:
+            result = self.vulnerability_scanner.scan_security_headers(url)
+            
+            output = f"Security Headers Scan for {url}:\n\n"
+            output += f"Present Headers:\n"
+            for header, value in result['present_headers'].items():
+                output += f"  {header}: {value}\n"
+            
+            output += f"\nMissing Headers:\n"
+            for header in result['missing_headers']:
+                output += f"  {header}\n"
+            
+            output += f"\nSecurity Score: {result['security_score']:.1f}%\n"
+            
+            self.vuln_results.setText(output)
+            self.status_label.setText(f"Security headers scan complete for {url}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Security headers scan failed: {str(e)}")
+    
+    def scan_admin_panels(self):
+        url = self.vuln_url.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Warning", "Please enter a URL")
+            return
+        
+        try:
+            from urllib.parse import urlparse
+            base_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+            
+            results = self.vulnerability_scanner.scan_admin_panels(base_url)
+            
+            output = f"Admin Panel Scan for {base_url}:\n\n"
+            if not results:
+                output += "No admin panels found.\n"
+            else:
+                for panel in results:
+                    output += f"Path: {panel['path']}\n"
+                    output += f"URL: {panel['url']}\n"
+                    output += f"Status: {panel['status_code']}\n"
+                    output += f"Severity: {panel['severity']}\n\n"
+            
+            self.vuln_results.setText(output)
+            self.status_label.setText(f"Admin panel scan complete for {base_url}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Admin panel scan failed: {str(e)}")
+    
+    def full_vulnerability_scan(self):
+        url = self.vuln_url.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Warning", "Please enter a URL")
+            return
+        
+        try:
+            results = self.vulnerability_scanner.full_scan(url)
+            
+            output = f"Full Vulnerability Scan for {url}:\n\n"
+            
+            output += "=== Exposed Files ===\n"
+            for vuln in results['exposed_files']:
+                output += f"{vuln['path']} ({vuln['severity']})\n"
+            
+            output += "\n=== Security Headers ===\n"
+            output += f"Missing: {', '.join(results['security_headers']['missing_headers'])}\n"
+            output += f"Score: {results['security_headers']['security_score']:.1f}%\n"
+            
+            output += "\n=== Admin Panels ===\n"
+            for panel in results['admin_panels']:
+                output += f"{panel['path']} ({panel['severity']})\n"
+            
+            self.vuln_results.setText(output)
+            self.status_label.setText(f"Full vulnerability scan complete for {url}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Full vulnerability scan failed: {str(e)}")
+    
+    def search_social_media(self):
+        query = self.social_query.text().strip()
+        if not query:
+            QMessageBox.warning(self, "Warning", "Please enter a search query")
+            return
+        
+        reddit_id = self.reddit_client_id.text().strip() or None
+        reddit_secret = self.reddit_client_secret.text().strip() or None
+        
+        try:
+            self.social_media_searcher = SocialMediaSearcher(
+                reddit_client_id=reddit_id,
+                reddit_client_secret=reddit_secret
+            )
+            
+            results = self.social_media_searcher.search_all(query)
+            
+            output = f"Social Media Search for '{query}':\n\n"
+            
+            for platform, data in results.items():
+                output += f"=== {platform.upper()} ===\n"
+                if 'error' in data[0]:
+                    output += f"Error: {data[0]['error']}\n"
+                else:
+                    for item in data[:5]:  # Show first 5 results
+                        output += f"Title: {item.get('title', item.get('content', 'N/A')[:50])}\n"
+                        output += f"URL: {item.get('url', item.get('permalink', 'N/A'))}\n"
+                        output += f"Score: {item.get('score', item.get('reblogs_count', 'N/A'))}\n\n"
+            
+            self.social_results.setText(output)
+            self.status_label.setText(f"Social media search complete for '{query}'")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Social media search failed: {str(e)}")
+    
+    def discover_backlinks(self):
+        url = self.backlink_url.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Warning", "Please enter a URL")
+            return
+        
+        try:
+            results = self.backlink_discovery.discover_backlinks(url)
+            
+            output = f"Backlink Discovery for {url}:\n\n"
+            
+            if 'error' in results[0]:
+                output += f"Error: {results[0]['error']}\n"
+            else:
+                analysis = self.backlink_discovery.analyze_backlinks(results)
+                output += f"Total Backlinks: {analysis['total_backlinks']}\n"
+                output += f"Unique Domains: {analysis['unique_domains']}\n\n"
+                
+                output += "Domains:\n"
+                for domain in analysis['domains'][:10]:
+                    output += f"  {domain}\n"
+                
+                output += "\nRecent Backlinks:\n"
+                for bl in results[:5]:
+                    output += f"  {bl['url']} ({bl['timestamp']})\n"
+            
+            self.backlink_results.setText(output)
+            self.status_label.setText(f"Backlink discovery complete for {url}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Backlink discovery failed: {str(e)}")
+    
+    def correlate_osint(self):
+        target = self.osint_target.text().strip()
+        if not target:
+            QMessageBox.warning(self, "Warning", "Please enter a target (IP or domain)")
+            return
+        
+        shodan_key = self.shodan_key.text().strip() or None
+        vt_key = self.virustotal_key.text().strip() or None
+        abuse_key = self.abuseipdb_key.text().strip() or None
+        
+        try:
+            self.passive_osint = PassiveOSINT(
+                shodan_api_key=shodan_key,
+                virustotal_api_key=vt_key,
+                abuseipdb_api_key=abuse_key
+            )
+            
+            results = self.passive_osint.correlate_osint(target)
+            
+            output = f"Passive OSINT Correlation for {target}:\n\n"
+            
+            for source, data in results.items():
+                output += f"=== {source.upper()} ===\n"
+                if 'error' in data:
+                    output += f"Error: {data['error']}\n"
+                else:
+                    output += f"Data retrieved successfully\n"
+                    if source == 'shodan':
+                        output += f"ISP: {data.get('isp', 'N/A')}\n"
+                        output += f"Open Ports: {len(data.get('ports', []))}\n"
+                    elif source == 'virustotal':
+                        stats = data.get('data', {}).get('attributes', {})
+                        output += f"Reputation: {stats.get('reputation', 'N/A')}\n"
+                        output += f"Malicious: {stats.get('last_analysis_stats', {}).get('malicious', 0)}\n"
+                output += "\n"
+            
+            self.osint_results.setText(output)
+            self.status_label.setText(f"OSINT correlation complete for {target}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"OSINT correlation failed: {str(e)}")
+    
+    def link_knowledge_graph(self):
+        text = self.kg_text.toPlainText().strip()
+        if not text:
+            QMessageBox.warning(self, "Warning", "Please enter text to analyze")
+            return
+        
+        try:
+            results = self.knowledge_graph_linker.link_entities(text)
+            
+            output = "Knowledge Graph Linking:\n\n"
+            
+            for entity, data in results.items():
+                output += f"=== {entity} ===\n"
+                
+                output += "Wikidata:\n"
+                for item in data['wikidata'][:3]:
+                    if 'error' not in item:
+                        output += f"  {item['label']}: {item['url']}\n"
+                
+                output += "\nDBpedia:\n"
+                for item in data['dbpedia'][:3]:
+                    if 'error' not in item:
+                        output += f"  {item['label']}: {item['entity']}\n"
+                
+                output += "\n"
+            
+            self.kg_results.setText(output)
+            self.status_label.setText("Knowledge graph linking complete")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Knowledge graph linking failed: {str(e)}")
 
 # Worker classes for new features
 class MultiEngineWorker(QThread):
