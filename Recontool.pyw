@@ -4112,7 +4112,7 @@ class GUI(QMainWindow):
         config_layout.addRow("Engine:", self.search_engine)
         
         self.num_results = QSpinBox()
-        self.num_results.setRange(1, 100)
+        self.num_results.setRange(1, 1000)
         self.num_results.setValue(10)
         config_layout.addRow("Results:", self.num_results)
         
