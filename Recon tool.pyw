@@ -135,15 +135,265 @@ try:
 except ImportError:
     ipaddress = None
 
+try:
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    import base64
+    import os
+except ImportError:
+    Fernet = None
+    hashes = None
+    PBKDF2HMAC = None
+    base64 = None
+    os = None
+
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QTabWidget, QLabel, QLineEdit, QPushButton, QComboBox, 
                              QSpinBox, QCheckBox, QTextEdit, QTableWidget, QTableWidgetItem,
                              QHeaderView, QFileDialog, QMessageBox, QGroupBox, QSplitter,
                              QProgressBar, QFormLayout, QScrollArea)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMutex, QMutexLocker
 from PyQt5.QtGui import QFont, QColor
+import traceback
+import sys
 
-class Crawler:
+# Security and validation utilities
+class APIKeyManager:
+    """Secure API key storage and encryption."""
+    
+    def __init__(self):
+        self._fernet = None
+        self._init_encryption()
+    
+    def _init_encryption(self):
+        """Initialize encryption with a key derived from machine-specific data."""
+        if Fernet is None:
+            print("Warning: cryptography library not available. API keys will be stored in plain text.")
+            return
+        
+        try:
+            # Derive a key from machine-specific data (in production, use proper key management)
+            machine_id = os.environ.get('COMPUTERNAME', 'default') + os.environ.get('USERNAME', 'default')
+            kdf = PBKDF2HMAC(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=b'recon_tool_salt',  # In production, use random salt stored securely
+                iterations=100000,
+            )
+            key = base64.urlsafe_b64encode(kdf.derive(machine_id.encode()))
+            self._fernet = Fernet(key)
+        except Exception as e:
+            print(f"Warning: Failed to initialize encryption: {e}")
+    
+    def encrypt_key(self, api_key: str) -> str:
+        """Encrypt an API key."""
+        if self._fernet is None:
+            return api_key  # Fallback to plain text
+        try:
+            return self._fernet.encrypt(api_key.encode()).decode()
+        except Exception as e:
+            print(f"Encryption failed: {e}")
+            return api_key
+    
+    def decrypt_key(self, encrypted_key: str) -> str:
+        """Decrypt an API key."""
+        if self._fernet is None:
+            return encrypted_key  # Return as-is if encryption not available
+        try:
+            return self._fernet.decrypt(encrypted_key.encode()).decode()
+        except Exception as e:
+            print(f"Decryption failed: {e}")
+            return encrypted_key
+
+class InputValidator:
+    """Strict input validation for URLs, IPs, ports, and other user inputs."""
+    
+    @staticmethod
+    def validate_url(url: str) -> tuple[bool, str]:
+        """Validate URL format and scheme."""
+        if not url or not url.strip():
+            return False, "URL cannot be empty"
+        
+        url = url.strip()
+        
+        try:
+            parsed = urlparse(url)
+            
+            # Check scheme
+            if parsed.scheme not in ['http', 'https']:
+                return False, "URL must use http or https scheme"
+            
+            # Check netloc (domain/IP)
+            if not parsed.netloc:
+                return False, "URL must contain a valid domain or IP address"
+            
+            # Check for suspicious patterns (potential injection)
+            dangerous_patterns = ['<script', 'javascript:', 'data:', 'vbscript:', 'onload=', 'onerror=']
+            for pattern in dangerous_patterns:
+                if pattern.lower() in url.lower():
+                    return False, f"URL contains potentially dangerous pattern: {pattern}"
+            
+            return True, "Valid URL"
+        except Exception as e:
+            return False, f"Invalid URL format: {str(e)}"
+    
+    @staticmethod
+    def validate_ip(ip: str) -> tuple[bool, str]:
+        """Validate IP address format."""
+        if not ip or not ip.strip():
+            return False, "IP address cannot be empty"
+        
+        ip = ip.strip()
+        
+        try:
+            if ipaddress is None:
+                return True, "IP validation not available (ipaddress module missing)"
+            
+            ipaddress.ip_address(ip)
+            
+            # Check for localhost/private ranges if needed
+            # ip_obj = ipaddress.ip_address(ip)
+            # if ip_obj.is_private:
+            #     return True, "Valid private IP"
+            
+            return True, "Valid IP address"
+        except ValueError:
+            return False, "Invalid IP address format"
+        except Exception as e:
+            return False, f"IP validation error: {str(e)}"
+    
+    @staticmethod
+    def validate_port(port: int) -> tuple[bool, str]:
+        """Validate port number."""
+        if not isinstance(port, int):
+            return False, "Port must be a number"
+        
+        if port < 1 or port > 65535:
+            return False, "Port must be between 1 and 65535"
+        
+        return True, "Valid port"
+    
+    @staticmethod
+    def validate_port_range(start_port: int, end_port: int) -> tuple[bool, str]:
+        """Validate port range."""
+        valid_start, msg_start = InputValidator.validate_port(start_port)
+        if not valid_start:
+            return False, f"Invalid start port: {msg_start}"
+        
+        valid_end, msg_end = InputValidator.validate_port(end_port)
+        if not valid_end:
+            return False, f"Invalid end port: {msg_end}"
+        
+        if start_port > end_port:
+            return False, "Start port cannot be greater than end port"
+        
+        # Prevent excessive ranges
+        if (end_port - start_port) > 10000:
+            return False, "Port range too large (maximum 10000 ports)"
+        
+        return True, "Valid port range"
+    
+    @staticmethod
+    def validate_domain(domain: str) -> tuple[bool, str]:
+        """Validate domain name format."""
+        if not domain or not domain.strip():
+            return False, "Domain cannot be empty"
+        
+        domain = domain.strip().lower()
+        
+        # Basic domain validation
+        if len(domain) > 253:
+            return False, "Domain too long (maximum 253 characters)"
+        
+        # Check for valid characters
+        if not re.match(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$', domain):
+            return False, "Invalid domain format"
+        
+        # Check for dangerous patterns
+        dangerous_patterns = ['<script', 'javascript:', 'onload=', 'onerror=']
+        for pattern in dangerous_patterns:
+            if pattern.lower() in domain.lower():
+                return False, f"Domain contains potentially dangerous pattern: {pattern}"
+        
+        return True, "Valid domain"
+    
+    @staticmethod
+    def sanitize_input(input_str: str, max_length: int = 1000) -> str:
+        """Sanitize user input to prevent injection attacks."""
+        if not input_str:
+            return ""
+        
+        # Truncate to max length
+        input_str = input_str[:max_length]
+        
+        # Remove potentially dangerous characters
+        dangerous_chars = ['<', '>', '"', "'", '&', '\x00', '\n', '\r']
+        for char in dangerous_chars:
+            input_str = input_str.replace(char, '')
+        
+        return input_str.strip()
+
+class ThreadPoolManager:
+    """Manage thread pool to prevent resource exhaustion."""
+    
+    _instance = None
+    _mutex = QMutex()
+    
+    def __new__(cls):
+        with QMutexLocker(cls._mutex):
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+                cls._instance._active_threads = []
+                cls._instance._max_threads = 10  # Maximum concurrent threads
+        return cls._instance
+    
+    def can_start_thread(self) -> bool:
+        """Check if a new thread can be started."""
+        with QMutexLocker(self._mutex):
+            # Count active threads
+            active_count = sum(1 for t in self._active_threads if t.isRunning())
+            return active_count < self._max_threads
+    
+    def register_thread(self, thread: QThread):
+        """Register a new thread."""
+        with QMutexLocker(self._mutex):
+            self._active_threads.append(thread)
+    
+    def unregister_thread(self, thread: QThread):
+        """Unregister a thread."""
+        with QMutexLocker(self._mutex):
+            if thread in self._active_threads:
+                self._active_threads.remove(thread)
+    
+    def get_active_count(self) -> int:
+        """Get count of active threads."""
+        with QMutexLocker(self._mutex):
+            return sum(1 for t in self._active_threads if t.isRunning())
+    
+    def set_max_threads(self, max_threads: int):
+        """Set maximum number of concurrent threads."""
+        with QMutexLocker(self._mutex):
+            self._max_threads = max(1, min(50, max_threads))  # Limit between 1 and 50
+
+class CancellableOperation:
+    """Base class for cancellable operations."""
+    
+    def __init__(self):
+        self._cancelled = False
+        self._mutex = QMutex()
+    
+    def is_cancelled(self) -> bool:
+        """Check if operation is cancelled."""
+        with QMutexLocker(self._mutex):
+            return self._cancelled
+    
+    def cancel(self):
+        """Cancel the operation."""
+        with QMutexLocker(self._mutex):
+            self._cancelled = True
+
+class Crawler(CancellableOperation):
     def __init__(self, url: str, depth: int, 
                  use_async: bool = True,
                  use_js_rendering: bool = False,
@@ -151,7 +401,16 @@ class Crawler:
                  polite_crawling: bool = True,
                  max_concurrent: int = 10,
                  rate_limit_delay: float = 1.0,
-                 auth_credentials: Optional[Dict] = None):
+                 auth_credentials: Optional[Dict] = None,
+                 use_disk_cache: bool = False,
+                 max_memory_results: int = 1000):
+        super().__init__()
+        
+        # Validate URL
+        is_valid, msg = InputValidator.validate_url(url)
+        if not is_valid:
+            raise ValueError(f"Invalid URL: {msg}")
+        
         self.url = url
         self.depth = depth
         self.visited_urls: Set[str] = set()
@@ -169,6 +428,16 @@ class Crawler:
         self.max_concurrent = max_concurrent
         self.rate_limit_delay = rate_limit_delay
         self.auth_credentials = auth_credentials
+        
+        # Memory optimization
+        self.use_disk_cache = use_disk_cache
+        self.max_memory_results = max_memory_results
+        self._cache_dir = "crawl_cache"
+        self._disk_cache_file = None
+        
+        if self.use_disk_cache:
+            import os
+            os.makedirs(self._cache_dir, exist_ok=True)
         
         # Rate limiting and backoff
         self.domain_last_request: Dict[str, float] = {}
@@ -189,6 +458,7 @@ class Crawler:
         # Playwright browser (lazy initialization)
         self.playwright_browser = None
         self.playwright_context = None
+        self.playwright_instance = None
     
     def _setup_authentication(self):
         """Setup authentication based on credentials."""
@@ -210,6 +480,63 @@ class Crawler:
             # For session-based auth, we'll need to login first
             self.login_url = self.auth_credentials.get('login_url')
             self.login_data = self.auth_credentials.get('login_data', {})
+    
+    def _add_result(self, result: Dict):
+        """Add result with memory management."""
+        if self.use_disk_cache and len(self.results) >= self.max_memory_results:
+            # Flush to disk cache
+            self._flush_to_disk()
+        
+        self.results.append(result)
+    
+    def _flush_to_disk(self):
+        """Flush results to disk cache for memory optimization."""
+        if not self.results:
+            return
+        
+        try:
+            import os
+            import json
+            from datetime import datetime
+            
+            if self._disk_cache_file is None:
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                self._disk_cache_file = os.path.join(self._cache_dir, f"crawl_{timestamp}.json")
+            
+            with open(self._disk_cache_file, 'a', encoding='utf-8') as f:
+                for result in self.results:
+                    f.write(json.dumps(result) + '\n')
+            
+            self.results.clear()
+        except Exception as e:
+            print(f"Error flushing to disk cache: {e}")
+    
+    def _load_from_disk(self) -> List[Dict]:
+        """Load results from disk cache."""
+        all_results = []
+        
+        try:
+            import os
+            if os.path.exists(self._cache_dir):
+                for filename in os.listdir(self._cache_dir):
+                    if filename.startswith('crawl_') and filename.endswith('.json'):
+                        filepath = os.path.join(self._cache_dir, filename)
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            for line in f:
+                                try:
+                                    all_results.append(json.loads(line.strip()))
+                                except json.JSONDecodeError:
+                                    continue
+        except Exception as e:
+            print(f"Error loading from disk cache: {e}")
+        
+        return all_results + self.results
+    
+    def get_results(self) -> List[Dict]:
+        """Return the crawl results, loading from disk if needed."""
+        if self.use_disk_cache:
+            return self._load_from_disk()
+        return self.results
     
     async def _perform_login(self, session: aiohttp.ClientSession) -> bool:
         """Perform login for session-based authentication."""
@@ -339,8 +666,8 @@ class Crawler:
         
         try:
             if self.playwright_browser is None:
-                playwright = await async_playwright().start()
-                self.playwright_browser = await playwright.chromium.launch(headless=True)
+                self.playwright_instance = await async_playwright().start()
+                self.playwright_browser = await self.playwright_instance.chromium.launch(headless=True)
                 self.playwright_context = await self.playwright_browser.new_context()
             
             page = await self.playwright_context.new_page()
@@ -350,14 +677,32 @@ class Crawler:
             return content
         except Exception as e:
             print(f"Playwright rendering failed: {e}")
+            # Ensure cleanup on error
+            await self._close_playwright()
             return None
     
     async def _close_playwright(self):
-        """Close Playwright browser."""
-        if self.playwright_browser:
-            await self.playwright_browser.close()
-            self.playwright_browser = None
-            self.playwright_context = None
+        """Close Playwright browser with proper cleanup."""
+        try:
+            if self.playwright_context:
+                await self.playwright_context.close()
+                self.playwright_context = None
+        except Exception as e:
+            print(f"Error closing Playwright context: {e}")
+        
+        try:
+            if self.playwright_browser:
+                await self.playwright_browser.close()
+                self.playwright_browser = None
+        except Exception as e:
+            print(f"Error closing Playwright browser: {e}")
+        
+        try:
+            if self.playwright_instance:
+                await self.playwright_instance.stop()
+                self.playwright_instance = None
+        except Exception as e:
+            print(f"Error stopping Playwright instance: {e}")
         
     def is_valid_url(self, url: str) -> bool:
         """Check if URL is valid and belongs to the same domain."""
@@ -2586,12 +2931,19 @@ class IPGeolocation:
         self.geoip_db_path = geoip_db_path
         self.reader = None
         self.cache = {}
+        self.using_fallback = False
         
         if geoip2 and geoip_db_path:
             try:
-                self.reader = geoip2.database.Reader(geoip_db_path)
+                import os
+                if not os.path.exists(geoip_db_path):
+                    print(f"Warning: GeoIP database file not found at {geoip_db_path}. Using fallback API.")
+                    self.using_fallback = True
+                else:
+                    self.reader = geoip2.database.Reader(geoip_db_path)
             except Exception as e:
-                print(f"Failed to load GeoIP database: {e}")
+                print(f"Failed to load GeoIP database: {e}. Using fallback API.")
+                self.using_fallback = True
     
     def geolocate_ip(self, ip: str) -> Dict:
         """Geolocate an IP address."""
@@ -2683,7 +3035,18 @@ class IPGeolocation:
             return None
 
 class SSLTLSAnalyzer:
-    """SSL/TLS Cipher Analysis - certificates, HSTS, CSP headers."""
+    """SSL/TLS Cipher Analysis - certificates, HSTS, CSP headers.
+    
+    SECURITY NOTE: This analyzer disables hostname verification (check_hostname=False) and 
+    certificate verification (verify_mode=ssl.CERT_NONE) when retrieving certificates. 
+    This is intentional for certificate analysis purposes only, as it allows inspection of 
+    certificates even when they have hostname mismatches or other verification issues.
+    
+    WARNING: This configuration should NOT be used for general HTTPS requests, as it 
+    exposes the application to man-in-the-middle attacks. The disabled verification is 
+    only used for the specific certificate inspection functionality in analyze_certificate().
+    All other HTTP requests use default SSL verification.
+    """
     
     WEAK_CIPHERS = [
         'RC4', 'DES', '3DES', 'MD5', 'SHA1', 'NULL', 'EXPORT', 'anon'
@@ -2696,7 +3059,13 @@ class SSLTLSAnalyzer:
         })
     
     def analyze_certificate(self, hostname: str, port: int = 443) -> Dict:
-        """Analyze SSL/TLS certificate."""
+        """Analyze SSL/TLS certificate.
+        
+        SECURITY NOTE: This method intentionally disables SSL verification to allow
+        certificate inspection even for certificates with hostname mismatches or
+        other verification issues. This is safe for analysis purposes but should
+        not be used for secure data transmission.
+        """
         result = {
             'hostname': hostname,
             'port': port,
@@ -2711,13 +3080,15 @@ class SSLTLSAnalyzer:
             'signature_algorithm': None,
             'key_size': None,
             'weak_cipher': False,
-            'error': None
+            'error': None,
+            'verification_disabled': True  # Document that verification is disabled
         }
         
         try:
             # Get certificate from socket
             import socket
             context = ssl.create_default_context()
+            # WARNING: Verification disabled for certificate analysis purposes
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
             
