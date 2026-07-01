@@ -38,6 +38,59 @@ try:
     import whois
 except ImportError:
     whois = None
+
+# Advanced feature imports
+try:
+    import networkx as nx
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+except ImportError:
+    nx = None
+    plt = None
+
+try:
+    from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
+except ImportError:
+    pipeline = None
+    AutoTokenizer = None
+    AutoModelForSequenceClassification = None
+
+try:
+    import spacy
+except ImportError:
+    spacy = None
+
+try:
+    from PIL import Image
+    import imagehash
+except ImportError:
+    Image = None
+    imagehash = None
+
+try:
+    import pytesseract
+except ImportError:
+    pytesseract = None
+
+try:
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+except ImportError:
+    go = None
+    make_subplots = None
+
+try:
+    from PyQtWebEngine.QtWebEngineWidgets import QWebEngineView
+    from PyQtWebEngine.QtCore import QUrl
+except ImportError:
+    QWebEngineView = None
+    QUrl = None
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QTabWidget, QLabel, QLineEdit, QPushButton, QComboBox, 
                              QSpinBox, QCheckBox, QTextEdit, QTableWidget, QTableWidgetItem,
@@ -1635,6 +1688,982 @@ class PortScanner:
         
         return [r for r in results if r is not None]
 
+class NetworkGraphGenerator:
+    """Generate and visualize site structure using networkx + matplotlib."""
+    
+    def __init__(self):
+        if nx is None or plt is None:
+            raise ImportError("networkx and matplotlib are required for NetworkGraphGenerator")
+        self.graph = nx.DiGraph()
+        self.url_to_node = {}
+        self.node_counter = 0
+    
+    def add_edge(self, source_url: str, target_url: str, edge_type: str = 'link'):
+        """Add an edge between two URLs."""
+        if source_url not in self.url_to_node:
+            self.url_to_node[source_url] = f"n{self.node_counter}"
+            self.graph.add_node(self.url_to_node[source_url], url=source_url)
+            self.node_counter += 1
+        
+        if target_url not in self.url_to_node:
+            self.url_to_node[target_url] = f"n{self.node_counter}"
+            self.graph.add_node(self.url_to_node[target_url], url=target_url)
+            self.node_counter += 1
+        
+        self.graph.add_edge(
+            self.url_to_node[source_url], 
+            self.url_to_node[target_url], 
+            edge_type=edge_type
+        )
+    
+    def build_from_crawl_results(self, crawl_results: List[Dict]):
+        """Build graph from crawl results."""
+        url_to_links = {}
+        
+        for result in crawl_results:
+            url = result.get('url')
+            if url and result.get('type') == 'page':
+                url_to_links[url] = []
+        
+        # Extract links from results (would need to be stored during crawl)
+        for result in crawl_results:
+            url = result.get('url')
+            if url and url in url_to_links:
+                # In a real implementation, you'd extract links from the page
+                pass
+        
+        # Build edges
+        for source, targets in url_to_links.items():
+            for target in targets:
+                self.add_edge(source, target)
+    
+    def calculate_metrics(self) -> Dict:
+        """Calculate graph metrics."""
+        if not self.graph.nodes():
+            return {}
+        
+        metrics = {
+            'num_nodes': self.graph.number_of_nodes(),
+            'num_edges': self.graph.number_of_edges(),
+            'density': nx.density(self.graph),
+            'is_connected': nx.is_weakly_connected(self.graph),
+        }
+        
+        if metrics['is_connected']:
+            metrics['average_shortest_path'] = nx.average_shortest_path_length(self.graph)
+        
+        # Centrality measures
+        try:
+            metrics['pagerank'] = nx.pagerank(self.graph)
+            metrics['betweenness'] = nx.betweenness_centrality(self.graph)
+            metrics['degree_centrality'] = nx.degree_centrality(self.graph)
+        except:
+            pass
+        
+        return metrics
+    
+    def visualize(self, output_path: Optional[str] = None, figsize: tuple = (20, 15)):
+        """Visualize the graph."""
+        if not self.graph.nodes():
+            print("No nodes in graph to visualize")
+            return None
+        
+        plt.figure(figsize=figsize)
+        
+        # Use spring layout for better visualization
+        pos = nx.spring_layout(self.graph, k=2, iterations=50)
+        
+        # Draw nodes
+        nx.draw_networkx_nodes(self.graph, pos, node_size=500, node_color='lightblue', alpha=0.8)
+        
+        # Draw edges
+        nx.draw_networkx_edges(self.graph, pos, edge_color='gray', alpha=0.5, arrows=True)
+        
+        # Draw labels (use shortened URLs)
+        labels = {node: self.graph.nodes[node]['url'][:30] + '...' 
+                  if len(self.graph.nodes[node]['url']) > 30 
+                  else self.graph.nodes[node]['url'] 
+                  for node in self.graph.nodes()}
+        nx.draw_networkx_labels(self.graph, pos, labels, font_size=8)
+        
+        plt.title("Website Structure Graph")
+        plt.axis('off')
+        
+        if output_path:
+            plt.savefig(output_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            return output_path
+        else:
+            plt.show()
+            return None
+    
+    def get_figure_canvas(self, figsize: tuple = (20, 15)) -> Optional[FigureCanvas]:
+        """Get matplotlib figure canvas for PyQt integration."""
+        if plt is None:
+            return None
+        
+        if not self.graph.nodes():
+            return None
+        
+        fig = plt.figure(figsize=figsize)
+        pos = nx.spring_layout(self.graph, k=2, iterations=50)
+        
+        nx.draw_networkx_nodes(self.graph, pos, node_size=500, node_color='lightblue', alpha=0.8)
+        nx.draw_networkx_edges(self.graph, pos, edge_color='gray', alpha=0.5, arrows=True)
+        
+        labels = {node: self.graph.nodes[node]['url'][:30] + '...' 
+                  if len(self.graph.nodes[node]['url']) > 30 
+                  else self.graph.nodes[node]['url'] 
+                  for node in self.graph.nodes()}
+        nx.draw_networkx_labels(self.graph, pos, labels, font_size=8)
+        
+        plt.title("Website Structure Graph")
+        plt.axis('off')
+        
+        canvas = FigureCanvas(fig)
+        return canvas
+    
+    def export_graph(self, output_path: str, format: str = 'gexf'):
+        """Export graph to file."""
+        if format == 'gexf':
+            nx.write_gexf(self.graph, output_path)
+        elif format == 'graphml':
+            nx.write_graphml(self.graph, output_path)
+        elif format == 'json':
+            from networkx.readwrite import json_graph
+            data = json_graph.node_link_data(self.graph)
+            import json
+            with open(output_path, 'w') as f:
+                json.dump(data, f)
+        else:
+            raise ValueError(f"Unsupported format: {format}")
+
+class ContentClassifier:
+    """Classify pages by topic/sentiment using BERT/transformer models."""
+    
+    def __init__(self, model_name: str = 'distilbert-base-uncased-finetuned-sst-2-english'):
+        if pipeline is None:
+            raise ImportError("transformers library is required for ContentClassifier")
+        
+        self.model_name = model_name
+        self.classifier = None
+        self.topic_classifier = None
+        self._load_models()
+    
+    def _load_models(self):
+        """Load classification models."""
+        try:
+            # Sentiment analysis
+            self.classifier = pipeline('sentiment-analysis', model=self.model_name)
+            
+            # Topic classification (using zero-shot classification)
+            self.topic_classifier = pipeline('zero-shot-classification')
+        except Exception as e:
+            print(f"Error loading models: {e}")
+            self.classifier = None
+            self.topic_classifier = None
+    
+    def classify_sentiment(self, text: str) -> Dict:
+        """Classify sentiment of text."""
+        if self.classifier is None:
+            return {'error': 'Model not loaded'}
+        
+        try:
+            result = self.classifier(text[:512])  # BERT has 512 token limit
+            return {
+                'label': result[0]['label'],
+                'score': result[0]['score'],
+                'text_preview': text[:100]
+            }
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def classify_topic(self, text: str, candidate_labels: List[str]) -> Dict:
+        """Classify topic using zero-shot classification."""
+        if self.topic_classifier is None:
+            return {'error': 'Model not loaded'}
+        
+        try:
+            result = self.topic_classifier(text[:512], candidate_labels)
+            return {
+                'top_topic': result['labels'][0],
+                'confidence': result['scores'][0],
+                'all_topics': list(zip(result['labels'], result['scores'])),
+                'text_preview': text[:100]
+            }
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def batch_classify(self, texts: List[str], classify_type: str = 'sentiment', 
+                      candidate_labels: Optional[List[str]] = None) -> List[Dict]:
+        """Classify multiple texts."""
+        results = []
+        
+        for text in texts:
+            if classify_type == 'sentiment':
+                result = self.classify_sentiment(text)
+            elif classify_type == 'topic' and candidate_labels:
+                result = self.classify_topic(text, candidate_labels)
+            else:
+                result = {'error': 'Invalid classification type or missing labels'}
+            
+            results.append(result)
+        
+        return results
+
+class NamedEntityRecognizer:
+    """Extract persons, orgs, locations, dates using spaCy."""
+    
+    def __init__(self, model_name: str = 'en_core_web_sm'):
+        if spacy is None:
+            raise ImportError("spacy library is required for NamedEntityRecognizer")
+        
+        self.model_name = model_name
+        self.nlp = None
+        self._load_model()
+    
+    def _load_model(self):
+        """Load spaCy model."""
+        try:
+            self.nlp = spacy.load(self.model_name)
+        except OSError:
+            print(f"Model {self.model_name} not found. Please install it with: python -m spacy download {self.model_name}")
+            self.nlp = None
+    
+    def extract_entities(self, text: str) -> Dict:
+        """Extract named entities from text."""
+        if self.nlp is None:
+            return {'error': 'Model not loaded'}
+        
+        try:
+            doc = self.nlp(text)
+            
+            entities = {
+                'PERSON': [],
+                'ORG': [],
+                'GPE': [],  # Geopolitical entity (countries, cities, etc.)
+                'LOC': [],  # Location
+                'DATE': [],
+                'TIME': [],
+                'EMAIL': [],
+                'PHONE': [],
+                'URL': [],
+                'MONEY': [],
+                'CARDINAL': [],
+                'ORDINAL': []
+            }
+            
+            for ent in doc.ents:
+                if ent.label_ in entities:
+                    entities[ent.label_].append({
+                        'text': ent.text,
+                        'start': ent.start_char,
+                        'end': ent.end_char,
+                        'label': ent.label_
+                    })
+            
+            return entities
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def extract_custom_patterns(self, text: str, patterns: List[Dict]) -> List[Dict]:
+        """Extract custom patterns using spaCy's EntityRuler."""
+        if self.nlp is None:
+            return []
+        
+        try:
+            from spacy.pipeline import EntityRuler
+            
+            ruler = EntityRuler(self.nlp)
+            ruler.add_patterns(patterns)
+            self.nlp.add_pipe(ruler, before='ner')
+            
+            doc = self.nlp(text)
+            matches = []
+            
+            for ent in doc.ents:
+                matches.append({
+                    'text': ent.text,
+                    'label': ent.label_,
+                    'start': ent.start_char,
+                    'end': ent.end_char
+                })
+            
+            # Remove the ruler to avoid affecting future processing
+            self.nlp.remove_pipe('entity_ruler')
+            
+            return matches
+        except Exception as e:
+            print(f"Error extracting custom patterns: {e}")
+            return []
+
+class ContactHarvester:
+    """Extract emails, phone numbers, social media handles using regex."""
+    
+    EMAIL_PATTERN = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    PHONE_PATTERN = r'(?:\+?1[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}'
+    TWITTER_PATTERN = r'@[\w]{1,15}'
+    LINKEDIN_PATTERN = r'linkedin\.com/in/[\w-]+'
+    FACEBOOK_PATTERN = r'facebook\.com/[\w.]+'
+    INSTAGRAM_PATTERN = r'instagram\.com/[\w.]+'
+    GITHUB_PATTERN = r'github\.com/[\w-]+'
+    
+    def __init__(self):
+        self.patterns = {
+            'email': self.EMAIL_PATTERN,
+            'phone': self.PHONE_PATTERN,
+            'twitter': self.TWITTER_PATTERN,
+            'linkedin': self.LINKEDIN_PATTERN,
+            'facebook': self.FACEBOOK_PATTERN,
+            'instagram': self.INSTAGRAM_PATTERN,
+            'github': self.GITHUB_PATTERN
+        }
+    
+    def extract_contacts(self, text: str, contact_types: Optional[List[str]] = None) -> Dict:
+        """Extract contacts from text."""
+        if contact_types is None:
+            contact_types = list(self.patterns.keys())
+        
+        results = {}
+        
+        for contact_type in contact_types:
+            if contact_type in self.patterns:
+                pattern = self.patterns[contact_type]
+                matches = re.findall(pattern, text, re.IGNORECASE)
+                results[contact_type] = list(set(matches))  # Remove duplicates
+        
+        return results
+    
+    def extract_from_html(self, html_content: str) -> Dict:
+        """Extract contacts from HTML content."""
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Extract from text content
+        text = soup.get_text()
+        results = self.extract_contacts(text)
+        
+        # Extract from mailto links
+        mailto_links = soup.find_all('a', href=re.compile(r'^mailto:', re.IGNORECASE))
+        emails = [link['href'].replace('mailto:', '') for link in mailto_links]
+        results['email'].extend(emails)
+        results['email'] = list(set(results['email']))
+        
+        # Extract from tel links
+        tel_links = soup.find_all('a', href=re.compile(r'^tel:', re.IGNORECASE))
+        phones = [link['href'].replace('tel:', '') for link in tel_links]
+        results['phone'].extend(phones)
+        results['phone'] = list(set(results['phone']))
+        
+        return results
+    
+    def add_custom_pattern(self, name: str, pattern: str):
+        """Add a custom regex pattern."""
+        self.patterns[name] = pattern
+
+class TechnologyStackFingerprinter:
+    """Detect CMS, JS frameworks, web servers, analytics (Wappalyzer-style)."""
+    
+    TECHNOLOGY_SIGNATURES = {
+        'cms': {
+            'WordPress': ['wp-content', 'wp-includes', '/wordpress/'],
+            'Drupal': ['drupal', 'sites/default/files'],
+            'Joomla': ['joomla', '/components/'],
+            'Magento': ['magento', '/skin/'],
+            'Shopify': ['shopify', 'cdn.shopify.com'],
+            'Squarespace': ['squarespace', 'static1.squarespace.com'],
+            'Wix': ['wix', 'static.wixstatic.com'],
+        },
+        'javascript_frameworks': {
+            'React': ['react', 'react-dom', '_react'],
+            'Vue.js': ['vue', 'Vue', 'v-if'],
+            'Angular': ['angular', 'ng-app', 'ng-controller'],
+            'jQuery': ['jquery', '$(', 'jQuery'],
+            'Ember.js': ['ember', 'Ember'],
+            'Backbone.js': ['backbone', 'Backbone'],
+            'Svelte': ['svelte', 'Svelte'],
+        },
+        'web_servers': {
+            'Apache': ['Apache', 'Server: Apache'],
+            'Nginx': ['nginx', 'Server: nginx'],
+            'IIS': ['IIS', 'Microsoft-IIS'],
+            'Cloudflare': ['cloudflare', 'cf-ray'],
+        },
+        'analytics': {
+            'Google Analytics': ['google-analytics.com', 'ga.js', 'gtag.js'],
+            'Google Tag Manager': ['googletagmanager.com', 'GTM-'],
+            'Hotjar': ['hotjar.com', 'hj'],
+            'Mixpanel': ['mixpanel.com', 'mixpanel'],
+            'Segment': ['segment.com', 'analytics.js'],
+        },
+        'cdn': {
+            'Cloudflare': ['cloudflare', 'cf-ray'],
+            'CloudFront': ['cloudfront.net'],
+            'Akamai': ['akamai', 'akamaihd.net'],
+            'Fastly': ['fastly', 'fastly.net'],
+        }
+    }
+    
+    def __init__(self):
+        self.detected_technologies = {}
+    
+    def fingerprint(self, url: str, html_content: str, headers: Dict) -> Dict:
+        """Fingerprint technology stack from URL, HTML, and headers."""
+        results = {
+            'cms': [],
+            'javascript_frameworks': [],
+            'web_servers': [],
+            'analytics': [],
+            'cdn': []
+        }
+        
+        # Check headers
+        server_header = headers.get('Server', '').lower()
+        for tech, signatures in self.TECHNOLOGY_SIGNATURES['web_servers'].items():
+            for sig in signatures:
+                if sig.lower() in server_header:
+                    if tech not in results['web_servers']:
+                        results['web_servers'].append(tech)
+        
+        # Check HTML content
+        html_lower = html_content.lower()
+        
+        for category, technologies in self.TECHNOLOGY_SIGNATURES.items():
+            if category == 'web_servers':
+                continue  # Already checked in headers
+            
+            for tech, signatures in technologies.items():
+                for sig in signatures:
+                    if sig.lower() in html_lower:
+                        if tech not in results[category]:
+                            results[category].append(tech)
+        
+        # Check URL patterns
+        url_lower = url.lower()
+        for tech, signatures in self.TECHNOLOGY_SIGNATURES['cms'].items():
+            for sig in signatures:
+                if sig.lower() in url_lower:
+                    if tech not in results['cms']:
+                        results['cms'].append(tech)
+        
+        self.detected_technologies = results
+        return results
+    
+    def generate_report(self) -> str:
+        """Generate a human-readable report."""
+        if not self.detected_technologies:
+            return "No technologies detected."
+        
+        report = "Technology Stack Detection Report\n"
+        report += "=" * 40 + "\n\n"
+        
+        for category, technologies in self.detected_technologies.items():
+            if technologies:
+                report += f"{category.replace('_', ' ').title()}:\n"
+                for tech in technologies:
+                    report += f"  - {tech}\n"
+                report += "\n"
+        
+        return report
+
+class VisualAnalyzer:
+    """Full-page screenshots + perceptual hashing for phishing/clone detection."""
+    
+    def __init__(self):
+        if Image is None or imagehash is None:
+            raise ImportError("PIL and imagehash are required for VisualAnalyzer")
+        self.screenshot_dir = "screenshots"
+        self.hash_database = {}
+    
+    def capture_screenshot(self, url: str, output_path: Optional[str] = None) -> Optional[str]:
+        """Capture screenshot using Playwright."""
+        if async_playwright is None:
+            print("Playwright is required for screenshot capture")
+            return None
+        
+        import asyncio
+        
+        async def _capture():
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
+                await page.goto(url, wait_until='networkidle', timeout=30000)
+                
+                if output_path is None:
+                    import os
+                    os.makedirs(self.screenshot_dir, exist_ok=True)
+                    filename = f"{hashlib.md5(url.encode()).hexdigest()}.png"
+                    output_path = os.path.join(self.screenshot_dir, filename)
+                
+                await page.screenshot(path=output_path, full_page=True)
+                await browser.close()
+                return output_path
+        
+        try:
+            return asyncio.run(_capture())
+        except Exception as e:
+            print(f"Error capturing screenshot: {e}")
+            return None
+    
+    def compute_perceptual_hash(self, image_path: str) -> Optional[str]:
+        """Compute perceptual hash of an image."""
+        try:
+            image = Image.open(image_path)
+            phash = imagehash.phash(image)
+            return str(phash)
+        except Exception as e:
+            print(f"Error computing perceptual hash: {e}")
+            return None
+    
+    def detect_clone(self, image_path: str, threshold: int = 5) -> List[Dict]:
+        """Detect if image is a clone of any in database."""
+        current_hash = self.compute_perceptual_hash(image_path)
+        if current_hash is None:
+            return []
+        
+        clones = []
+        
+        for url, stored_hash in self.hash_database.items():
+            hash1 = imagehash.hex_to_hash(current_hash)
+            hash2 = imagehash.hex_to_hash(stored_hash)
+            distance = hash1 - hash2
+            
+            if distance <= threshold:
+                clones.append({
+                    'url': url,
+                    'hash': stored_hash,
+                    'distance': distance
+                })
+        
+        return clones
+    
+    def add_to_database(self, url: str, image_path: str):
+        """Add image hash to database."""
+        phash = self.compute_perceptual_hash(image_path)
+        if phash:
+            self.hash_database[url] = phash
+    
+    def compare_images(self, image_path1: str, image_path2: str) -> Dict:
+        """Compare two images using perceptual hashing."""
+        hash1 = self.compute_perceptual_hash(image_path1)
+        hash2 = self.compute_perceptual_hash(image_path2)
+        
+        if hash1 is None or hash2 is None:
+            return {'error': 'Could not compute hashes'}
+        
+        h1 = imagehash.hex_to_hash(hash1)
+        h2 = imagehash.hex_to_hash(hash2)
+        distance = h1 - h2
+        
+        return {
+            'hash1': hash1,
+            'hash2': hash2,
+            'distance': distance,
+            'is_similar': distance <= 5
+        }
+
+class OCREngine:
+    """Extract text from images using Tesseract OCR."""
+    
+    def __init__(self, tesseract_path: Optional[str] = None):
+        if pytesseract is None:
+            raise ImportError("pytesseract is required for OCREngine")
+        
+        if tesseract_path:
+            pytesseract.pytesseract.tesseract_cmd = tesseract_path
+        
+        self.supported_languages = ['eng', 'spa', 'fra', 'deu', 'ita', 'por']
+    
+    def extract_text(self, image_path: str, language: str = 'eng') -> str:
+        """Extract text from image."""
+        try:
+            text = pytesseract.image_to_string(Image.open(image_path), lang=language)
+            return text
+        except Exception as e:
+            return f"Error: {str(e)}"
+    
+    def extract_text_with_boxes(self, image_path: str, language: str = 'eng') -> List[Dict]:
+        """Extract text with bounding box information."""
+        try:
+            data = pytesseract.image_to_data(Image.open(image_path), lang=language, output_type=pytesseract.Output.DICT)
+            
+            results = []
+            n_boxes = len(data['text'])
+            
+            for i in range(n_boxes):
+                if int(data['conf'][i]) > 60:  # Confidence threshold
+                    results.append({
+                        'text': data['text'][i],
+                        'confidence': data['conf'][i],
+                        'bbox': {
+                            'left': data['left'][i],
+                            'top': data['top'][i],
+                            'width': data['width'][i],
+                            'height': data['height'][i]
+                        }
+                    })
+            
+            return results
+        except Exception as e:
+            return [{'error': str(e)}]
+    
+    def extract_from_url(self, image_url: str, language: str = 'eng') -> str:
+        """Extract text from image URL."""
+        try:
+            response = requests.get(image_url, timeout=10)
+            response.raise_for_status()
+            
+            from io import BytesIO
+            image = Image.open(BytesIO(response.content))
+            text = pytesseract.image_to_string(image, lang=language)
+            return text
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+class TemporalAnalyzer:
+    """Diff-tracking (textual & visual) with alert triggers on regex patterns."""
+    
+    def __init__(self, storage_dir: str = "temporal_data"):
+        self.storage_dir = storage_dir
+        os.makedirs(storage_dir, exist_ok=True)
+        self.baseline_data = {}
+    
+    def capture_baseline(self, url: str, content: str, metadata: Optional[Dict] = None):
+        """Capture baseline data for comparison."""
+        timestamp = datetime.now().isoformat()
+        
+        baseline = {
+            'url': url,
+            'timestamp': timestamp,
+            'content_hash': hashlib.sha256(content.encode()).hexdigest(),
+            'content': content,
+            'metadata': metadata or {}
+        }
+        
+        # Store baseline
+        key = hashlib.md5(url.encode()).hexdigest()
+        self.baseline_data[key] = baseline
+        
+        # Save to disk
+        baseline_path = os.path.join(self.storage_dir, f"{key}_baseline.json")
+        with open(baseline_path, 'w', encoding='utf-8') as f:
+            json.dump(baseline, f, indent=2)
+        
+        return baseline
+    
+    def detect_changes(self, url: str, current_content: str, 
+                      alert_patterns: Optional[List[str]] = None) -> Dict:
+        """Detect changes from baseline."""
+        key = hashlib.md5(url.encode()).hexdigest()
+        
+        if key not in self.baseline_data:
+            return {'error': 'No baseline found for this URL'}
+        
+        baseline = self.baseline_data[key]
+        current_hash = hashlib.sha256(current_content.encode()).hexdigest()
+        
+        changes = {
+            'url': url,
+            'timestamp': datetime.now().isoformat(),
+            'baseline_timestamp': baseline['timestamp'],
+            'content_changed': current_hash != baseline['content_hash'],
+            'content_hash': current_hash,
+            'baseline_hash': baseline['content_hash']
+        }
+        
+        if changes['content_changed']:
+            # Compute text diff
+            changes['text_diff'] = self._compute_diff(baseline['content'], current_content)
+            
+            # Check for alert patterns
+            if alert_patterns:
+                changes['pattern_matches'] = self._check_patterns(current_content, alert_patterns)
+        
+        return changes
+    
+    def _compute_diff(self, old_text: str, new_text: str) -> Dict:
+        """Compute text diff using difflib."""
+        import difflib
+        
+        diff = difflib.unified_diff(
+            old_text.splitlines(keepends=True),
+            new_text.splitlines(keepends=True),
+            fromfile='baseline',
+            tofile='current'
+        )
+        
+        return {
+            'added_lines': 0,
+            'removed_lines': 0,
+            'diff': ''.join(diff)
+        }
+    
+    def _check_patterns(self, content: str, patterns: List[str]) -> List[Dict]:
+        """Check if content matches any alert patterns."""
+        matches = []
+        
+        for pattern in patterns:
+            try:
+                regex_matches = re.finditer(pattern, content, re.IGNORECASE)
+                for match in regex_matches:
+                    matches.append({
+                        'pattern': pattern,
+                        'match': match.group(),
+                        'position': match.start()
+                    })
+            except re.error:
+                pass
+        
+        return matches
+    
+    def get_history(self, url: str) -> List[Dict]:
+        """Get change history for a URL."""
+        key = hashlib.md5(url.encode()).hexdigest()
+        
+        # Load history from disk
+        history_files = [f for f in os.listdir(self.storage_dir) if f.startswith(key)]
+        
+        history = []
+        for hist_file in history_files:
+            hist_path = os.path.join(self.storage_dir, hist_file)
+            try:
+                with open(hist_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    history.append(data)
+            except:
+                pass
+        
+        return sorted(history, key=lambda x: x.get('timestamp', ''))
+
+class StatisticalAnalyzer:
+    """Generate reports on response times, status codes, content types, outbound links."""
+    
+    def __init__(self):
+        self.metrics = {
+            'response_times': [],
+            'status_codes': {},
+            'content_types': {},
+            'outbound_links': [],
+            'page_sizes': []
+        }
+    
+    def record_metric(self, url: str, response_time: float, status_code: int, 
+                      content_type: str, page_size: int, outbound_links: List[str]):
+        """Record a single metric."""
+        self.metrics['response_times'].append(response_time)
+        
+        if status_code not in self.metrics['status_codes']:
+            self.metrics['status_codes'][status_code] = 0
+        self.metrics['status_codes'][status_code] += 1
+        
+        if content_type not in self.metrics['content_types']:
+            self.metrics['content_types'][content_type] = 0
+        self.metrics['content_types'][content_type] += 1
+        
+        self.metrics['page_sizes'].append(page_size)
+        self.metrics['outbound_links'].extend(outbound_links)
+    
+    def generate_summary(self) -> Dict:
+        """Generate statistical summary."""
+        if not self.metrics['response_times']:
+            return {'error': 'No metrics recorded'}
+        
+        summary = {
+            'response_times': {
+                'mean': np.mean(self.metrics['response_times']) if np else sum(self.metrics['response_times']) / len(self.metrics['response_times']),
+                'median': np.median(self.metrics['response_times']) if np else sorted(self.metrics['response_times'])[len(self.metrics['response_times']) // 2],
+                'min': min(self.metrics['response_times']),
+                'max': max(self.metrics['response_times']),
+                'std_dev': np.std(self.metrics['response_times']) if np else 0
+            },
+            'status_codes': self.metrics['status_codes'],
+            'content_types': self.metrics['content_types'],
+            'page_sizes': {
+                'mean': np.mean(self.metrics['page_sizes']) if np else sum(self.metrics['page_sizes']) / len(self.metrics['page_sizes']),
+                'total': sum(self.metrics['page_sizes']),
+                'min': min(self.metrics['page_sizes']),
+                'max': max(self.metrics['page_sizes'])
+            },
+            'outbound_links': {
+                'total': len(self.metrics['outbound_links']),
+                'unique': len(set(self.metrics['outbound_links']))
+            },
+            'total_requests': len(self.metrics['response_times'])
+        }
+        
+        return summary
+    
+    def generate_report(self) -> str:
+        """Generate human-readable report."""
+        summary = self.generate_summary()
+        
+        if 'error' in summary:
+            return summary['error']
+        
+        report = "Statistical Analysis Report\n"
+        report += "=" * 40 + "\n\n"
+        
+        report += f"Total Requests: {summary['total_requests']}\n\n"
+        
+        report += "Response Times:\n"
+        rt = summary['response_times']
+        report += f"  Mean: {rt['mean']:.3f}s\n"
+        report += f"  Median: {rt['median']:.3f}s\n"
+        report += f"  Min: {rt['min']:.3f}s\n"
+        report += f"  Max: {rt['max']:.3f}s\n"
+        report += f"  Std Dev: {rt['std_dev']:.3f}s\n\n"
+        
+        report += "Status Codes:\n"
+        for code, count in summary['status_codes'].items():
+            report += f"  {code}: {count}\n"
+        report += "\n"
+        
+        report += "Content Types:\n"
+        for ct, count in summary['content_types'].items():
+            report += f"  {ct}: {count}\n"
+        report += "\n"
+        
+        report += "Page Sizes:\n"
+        ps = summary['page_sizes']
+        report += f"  Mean: {ps['mean']:.0f} bytes\n"
+        report += f"  Total: {ps['total']:.0f} bytes\n"
+        report += f"  Min: {ps['min']} bytes\n"
+        report += f"  Max: {ps['max']} bytes\n\n"
+        
+        report += "Outbound Links:\n"
+        report += f"  Total: {summary['outbound_links']['total']}\n"
+        report += f"  Unique: {summary['outbound_links']['unique']}\n"
+        
+        return report
+
+class InteractiveDashboard:
+    """Real-time graphs using Plotly."""
+    
+    def __init__(self):
+        if go is None or make_subplots is None:
+            raise ImportError("plotly is required for InteractiveDashboard")
+        self.data_history = {
+            'timestamps': [],
+            'response_times': [],
+            'status_codes': [],
+            'pages_crawled': []
+        }
+    
+    def add_data_point(self, response_time: float, status_code: int, pages_crawled: int):
+        """Add a data point to the dashboard."""
+        self.data_history['timestamps'].append(datetime.now().strftime('%H:%M:%S'))
+        self.data_history['response_times'].append(response_time)
+        self.data_history['status_codes'].append(status_code)
+        self.data_history['pages_crawled'].append(pages_crawled)
+    
+    def create_response_time_chart(self) -> str:
+        """Create response time chart."""
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=self.data_history['timestamps'],
+            y=self.data_history['response_times'],
+            mode='lines+markers',
+            name='Response Time',
+            line=dict(color='blue')
+        ))
+        
+        fig.update_layout(
+            title='Response Times Over Time',
+            xaxis_title='Time',
+            yaxis_title='Response Time (s)',
+            hovermode='x unified'
+        )
+        
+        return fig.to_html()
+    
+    def create_status_code_chart(self) -> str:
+        """Create status code distribution chart."""
+        from collections import Counter
+        
+        status_counts = Counter(self.data_history['status_codes'])
+        
+        fig = go.Figure(data=[go.Pie(
+            labels=list(status_counts.keys()),
+            values=list(status_counts.values()),
+            hole=0.3
+        )])
+        
+        fig.update_layout(
+            title='Status Code Distribution',
+            annotations=[dict(text='Status Codes', x=0.5, y=0.5, font_size=20, showarrow=False)]
+        )
+        
+        return fig.to_html()
+    
+    def create_pages_crawled_chart(self) -> str:
+        """Create cumulative pages crawled chart."""
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=self.data_history['timestamps'],
+            y=self.data_history['pages_crawled'],
+            mode='lines+markers',
+            name='Pages Crawled',
+            fill='tozeroy',
+            line=dict(color='green')
+        ))
+        
+        fig.update_layout(
+            title='Cumulative Pages Crawled',
+            xaxis_title='Time',
+            yaxis_title='Total Pages'
+        )
+        
+        return fig.to_html()
+    
+    def create_dashboard(self) -> str:
+        """Create complete dashboard with all charts."""
+        dashboard_html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Recon Tool Dashboard</title>
+            <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; }
+                .chart-container { margin: 20px 0; }
+                h1 { color: #333; }
+            </style>
+        </head>
+        <body>
+            <h1>Recon Tool Real-Time Dashboard</h1>
+            <div class="chart-container" id="response-time-chart"></div>
+            <div class="chart-container" id="status-code-chart"></div>
+            <div class="chart-container" id="pages-crawled-chart"></div>
+            <script>
+        """
+        
+        dashboard_html += self.create_response_time_chart()
+        dashboard_html += self.create_status_code_chart()
+        dashboard_html += self.create_pages_crawled_chart()
+        
+        dashboard_html += """
+            </script>
+        </body>
+        </html>
+        """
+        
+        return dashboard_html
+    
+    def save_dashboard(self, output_path: str = "dashboard.html"):
+        """Save dashboard to HTML file."""
+        dashboard_html = self.create_dashboard()
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(dashboard_html)
+        return output_path
+    
+    def clear_data(self):
+        """Clear all historical data."""
+        self.data_history = {
+            'timestamps': [],
+            'response_times': [],
+            'status_codes': [],
+            'pages_crawled': []
+        }
+
 class SearchWorker(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(list)
@@ -1727,6 +2756,43 @@ class GUI(QMainWindow):
         self.whois_search = WhoIsSearch()
         self.port_scanner = PortScanner()
         
+        # Advanced feature instances
+        try:
+            self.network_graph = NetworkGraphGenerator()
+        except:
+            self.network_graph = None
+        
+        try:
+            self.content_classifier = ContentClassifier()
+        except:
+            self.content_classifier = None
+        
+        try:
+            self.ner = NamedEntityRecognizer()
+        except:
+            self.ner = None
+        
+        self.contact_harvester = ContactHarvester()
+        self.tech_fingerprinter = TechnologyStackFingerprinter()
+        
+        try:
+            self.visual_analyzer = VisualAnalyzer()
+        except:
+            self.visual_analyzer = None
+        
+        try:
+            self.ocr_engine = OCREngine()
+        except:
+            self.ocr_engine = None
+        
+        self.temporal_analyzer = TemporalAnalyzer()
+        self.statistical_analyzer = StatisticalAnalyzer()
+        
+        try:
+            self.dashboard = InteractiveDashboard()
+        except:
+            self.dashboard = None
+        
         self.init_ui()
     
     def init_ui(self):
@@ -1753,6 +2819,14 @@ class GUI(QMainWindow):
         self.create_tor_tab()
         self.create_whois_tab()
         self.create_port_scanner_tab()
+        self.create_network_graph_tab()
+        self.create_content_analysis_tab()
+        self.create_contact_harvest_tab()
+        self.create_tech_fingerprint_tab()
+        self.create_visual_analysis_tab()
+        self.create_temporal_analysis_tab()
+        self.create_statistics_tab()
+        self.create_dashboard_tab()
         
         # Status bar
         self.status_label = QLabel("Ready")
@@ -2277,6 +3351,306 @@ class GUI(QMainWindow):
         layout.addLayout(export_layout)
         
         self.tab_widget.addTab(scanner_tab, "Port Scanner")
+    
+    def create_network_graph_tab(self):
+        """Create tab for network graph visualization."""
+        graph_tab = QWidget()
+        layout = QVBoxLayout(graph_tab)
+        
+        # Graph controls
+        control_group = QGroupBox("Graph Controls")
+        control_layout = QHBoxLayout()
+        
+        generate_btn = QPushButton("Generate Graph from Crawl Results")
+        generate_btn.clicked.connect(self.generate_network_graph)
+        control_layout.addWidget(generate_btn)
+        
+        export_btn = QPushButton("Export Graph")
+        export_btn.clicked.connect(self.export_network_graph)
+        control_layout.addWidget(export_btn)
+        
+        control_group.setLayout(control_layout)
+        layout.addWidget(control_group)
+        
+        # Graph display area
+        self.graph_display = QTextEdit()
+        self.graph_display.setReadOnly(True)
+        self.graph_display.setPlaceholderText("Network graph will be displayed here...")
+        layout.addWidget(self.graph_display)
+        
+        # Metrics display
+        self.graph_metrics = QTextEdit()
+        self.graph_metrics.setReadOnly(True)
+        self.graph_metrics.setMaximumHeight(150)
+        self.graph_metrics.setPlaceholderText("Graph metrics will appear here...")
+        layout.addWidget(self.graph_metrics)
+        
+        self.tab_widget.addTab(graph_tab, "Network Graph")
+    
+    def create_content_analysis_tab(self):
+        """Create tab for content classification and NER."""
+        analysis_tab = QWidget()
+        layout = QVBoxLayout(analysis_tab)
+        
+        # Content classification group
+        class_group = QGroupBox("Content Classification")
+        class_layout = QFormLayout()
+        
+        self.classify_text = QTextEdit()
+        self.classify_text.setMaximumHeight(100)
+        self.classify_text.setPlaceholderText("Enter text to classify...")
+        class_layout.addRow("Text:", self.classify_text)
+        
+        self.classify_type = QComboBox()
+        self.classify_type.addItems(['Sentiment', 'Topic'])
+        class_layout.addRow("Type:", self.classify_type)
+        
+        self.topic_labels = QLineEdit()
+        self.topic_labels.setPlaceholderText("Comma-separated topics (for topic classification)")
+        class_layout.addRow("Topics:", self.topic_labels)
+        
+        classify_btn = QPushButton("Classify")
+        classify_btn.clicked.connect(self.perform_classification)
+        class_layout.addRow("", classify_btn)
+        
+        class_group.setLayout(class_layout)
+        layout.addWidget(class_group)
+        
+        # NER group
+        ner_group = QGroupBox("Named Entity Recognition")
+        ner_layout = QFormLayout()
+        
+        self.ner_text = QTextEdit()
+        self.ner_text.setMaximumHeight(100)
+        self.ner_text.setPlaceholderText("Enter text for NER...")
+        ner_layout.addRow("Text:", self.ner_text)
+        
+        ner_btn = QPushButton("Extract Entities")
+        ner_btn.clicked.connect(self.perform_ner)
+        ner_layout.addRow("", ner_btn)
+        
+        ner_group.setLayout(ner_layout)
+        layout.addWidget(ner_group)
+        
+        # Results display
+        self.analysis_results = QTextEdit()
+        self.analysis_results.setReadOnly(True)
+        layout.addWidget(self.analysis_results)
+        
+        self.tab_widget.addTab(analysis_tab, "Content Analysis")
+    
+    def create_contact_harvest_tab(self):
+        """Create tab for contact harvesting."""
+        contact_tab = QWidget()
+        layout = QVBoxLayout(contact_tab)
+        
+        # Contact extraction group
+        extract_group = QGroupBox("Contact Extraction")
+        extract_layout = QFormLayout()
+        
+        self.contact_text = QTextEdit()
+        self.contact_text.setMaximumHeight(100)
+        self.contact_text.setPlaceholderText("Enter text or HTML to extract contacts...")
+        extract_layout.addRow("Text/HTML:", self.contact_text)
+        
+        self.contact_types = QCheckBox("Extract All Types")
+        self.contact_types.setChecked(True)
+        extract_layout.addRow("", self.contact_types)
+        
+        extract_btn = QPushButton("Extract Contacts")
+        extract_btn.clicked.connect(self.perform_contact_extraction)
+        extract_layout.addRow("", extract_btn)
+        
+        extract_group.setLayout(extract_layout)
+        layout.addWidget(extract_group)
+        
+        # Results display
+        self.contact_results = QTextEdit()
+        self.contact_results.setReadOnly(True)
+        layout.addWidget(self.contact_results)
+        
+        self.tab_widget.addTab(contact_tab, "Contact Harvest")
+    
+    def create_tech_fingerprint_tab(self):
+        """Create tab for technology stack fingerprinting."""
+        tech_tab = QWidget()
+        layout = QVBoxLayout(tech_tab)
+        
+        # Fingerprint controls
+        fp_group = QGroupBox("Technology Fingerprinting")
+        fp_layout = QFormLayout()
+        
+        self.fp_url = QLineEdit()
+        self.fp_url.setPlaceholderText("Enter URL to fingerprint...")
+        fp_layout.addRow("URL:", self.fp_url)
+        
+        self.fp_html = QTextEdit()
+        self.fp_html.setMaximumHeight(150)
+        self.fp_html.setPlaceholderText("Paste HTML content here (or leave blank to fetch)...")
+        fp_layout.addRow("HTML:", self.fp_html)
+        
+        fingerprint_btn = QPushButton("Fingerprint Technology Stack")
+        fingerprint_btn.clicked.connect(self.perform_tech_fingerprint)
+        fp_layout.addRow("", fingerprint_btn)
+        
+        fp_group.setLayout(fp_layout)
+        layout.addWidget(fp_group)
+        
+        # Results display
+        self.fp_results = QTextEdit()
+        self.fp_results.setReadOnly(True)
+        layout.addWidget(self.fp_results)
+        
+        self.tab_widget.addTab(tech_tab, "Tech Fingerprint")
+    
+    def create_visual_analysis_tab(self):
+        """Create tab for visual analysis and OCR."""
+        visual_tab = QWidget()
+        layout = QVBoxLayout(visual_tab)
+        
+        # Screenshot group
+        screenshot_group = QGroupBox("Screenshot & Visual Analysis")
+        screenshot_layout = QFormLayout()
+        
+        self.screenshot_url = QLineEdit()
+        self.screenshot_url.setPlaceholderText("Enter URL to screenshot...")
+        screenshot_layout.addRow("URL:", self.screenshot_url)
+        
+        screenshot_btn = QPushButton("Capture Screenshot")
+        screenshot_btn.clicked.connect(self.capture_screenshot)
+        screenshot_layout.addRow("", screenshot_btn)
+        
+        screenshot_group.setLayout(screenshot_layout)
+        layout.addWidget(screenshot_group)
+        
+        # OCR group
+        ocr_group = QGroupBox("OCR Text Extraction")
+        ocr_layout = QFormLayout()
+        
+        self.ocr_image_path = QLineEdit()
+        self.ocr_image_path.setPlaceholderText("Enter image path or URL...")
+        ocr_layout.addRow("Image:", self.ocr_image_path)
+        
+        ocr_btn = QPushButton("Extract Text")
+        ocr_btn.clicked.connect(self.perform_ocr)
+        ocr_layout.addRow("", ocr_btn)
+        
+        ocr_group.setLayout(ocr_layout)
+        layout.addWidget(ocr_group)
+        
+        # Results display
+        self.visual_results = QTextEdit()
+        self.visual_results.setReadOnly(True)
+        layout.addWidget(self.visual_results)
+        
+        self.tab_widget.addTab(visual_tab, "Visual Analysis")
+    
+    def create_temporal_analysis_tab(self):
+        """Create tab for temporal analysis and change detection."""
+        temporal_tab = QWidget()
+        layout = QVBoxLayout(temporal_tab)
+        
+        # Baseline capture
+        baseline_group = QGroupBox("Baseline Capture")
+        baseline_layout = QFormLayout()
+        
+        self.baseline_url = QLineEdit()
+        self.baseline_url.setPlaceholderText("Enter URL to baseline...")
+        baseline_layout.addRow("URL:", self.baseline_url)
+        
+        self.baseline_content = QTextEdit()
+        self.baseline_content.setMaximumHeight(100)
+        self.baseline_content.setPlaceholderText("Enter content to baseline...")
+        baseline_layout.addRow("Content:", self.baseline_content)
+        
+        capture_baseline_btn = QPushButton("Capture Baseline")
+        capture_baseline_btn.clicked.connect(self.capture_baseline)
+        baseline_layout.addRow("", capture_baseline_btn)
+        
+        baseline_group.setLayout(baseline_layout)
+        layout.addWidget(baseline_group)
+        
+        # Change detection
+        change_group = QGroupBox("Change Detection")
+        change_layout = QFormLayout()
+        
+        self.current_content = QTextEdit()
+        self.current_content.setMaximumHeight(100)
+        self.current_content.setPlaceholderText("Enter current content...")
+        change_layout.addRow("Current Content:", self.current_content)
+        
+        self.alert_patterns = QLineEdit()
+        self.alert_patterns.setPlaceholderText("Alert patterns (comma-separated regex)...")
+        change_layout.addRow("Alert Patterns:", self.alert_patterns)
+        
+        detect_changes_btn = QPushButton("Detect Changes")
+        detect_changes_btn.clicked.connect(self.detect_changes)
+        change_layout.addRow("", detect_changes_btn)
+        
+        change_group.setLayout(change_layout)
+        layout.addWidget(change_group)
+        
+        # Results display
+        self.temporal_results = QTextEdit()
+        self.temporal_results.setReadOnly(True)
+        layout.addWidget(self.temporal_results)
+        
+        self.tab_widget.addTab(temporal_tab, "Temporal Analysis")
+    
+    def create_statistics_tab(self):
+        """Create tab for statistical analysis."""
+        stats_tab = QWidget()
+        layout = QVBoxLayout(stats_tab)
+        
+        # Statistics controls
+        stats_group = QGroupBox("Statistical Analysis")
+        stats_layout = QFormLayout()
+        
+        generate_stats_btn = QPushButton("Generate Statistics from Crawl Results")
+        generate_stats_btn.clicked.connect(self.generate_statistics)
+        stats_layout.addRow("", generate_stats_btn)
+        
+        stats_group.setLayout(stats_layout)
+        layout.addWidget(stats_group)
+        
+        # Results display
+        self.stats_results = QTextEdit()
+        self.stats_results.setReadOnly(True)
+        layout.addWidget(self.stats_results)
+        
+        self.tab_widget.addTab(stats_tab, "Statistics")
+    
+    def create_dashboard_tab(self):
+        """Create tab for interactive dashboard."""
+        dashboard_tab = QWidget()
+        layout = QVBoxLayout(dashboard_tab)
+        
+        # Dashboard controls
+        dash_group = QGroupBox("Dashboard Controls")
+        dash_layout = QHBoxLayout()
+        
+        refresh_btn = QPushButton("Refresh Dashboard")
+        refresh_btn.clicked.connect(self.refresh_dashboard)
+        dash_layout.addWidget(refresh_btn)
+        
+        save_btn = QPushButton("Save Dashboard")
+        save_btn.clicked.connect(self.save_dashboard)
+        dash_layout.addWidget(save_btn)
+        
+        dash_group.setLayout(dash_layout)
+        layout.addWidget(dash_group)
+        
+        # Dashboard display (using web view if available)
+        if QWebEngineView is not None:
+            self.dashboard_view = QWebEngineView()
+            layout.addWidget(self.dashboard_view)
+        else:
+            self.dashboard_display = QTextEdit()
+            self.dashboard_display.setReadOnly(True)
+            self.dashboard_display.setPlaceholderText("Dashboard HTML will be displayed here...")
+            layout.addWidget(self.dashboard_display)
+        
+        self.tab_widget.addTab(dashboard_tab, "Dashboard")
     
     def perform_search(self):
         query = self.search_query.text().strip()
@@ -2820,6 +4194,343 @@ class GUI(QMainWindow):
                 QMessageBox.information(self, "Success", f"Results exported to {filename}")
             else:
                 QMessageBox.critical(self, "Error", "Failed to export results")
+    
+    # Network Graph handlers
+    def generate_network_graph(self):
+        if self.network_graph is None:
+            QMessageBox.warning(self, "Warning", "Network graph feature not available. Install networkx and matplotlib.")
+            return
+        
+        if not self.current_results:
+            QMessageBox.warning(self, "Warning", "No crawl results to generate graph from")
+            return
+        
+        try:
+            self.network_graph = NetworkGraphGenerator()
+            self.network_graph.build_from_crawl_results(self.current_results)
+            
+            metrics = self.network_graph.calculate_metrics()
+            metrics_text = "Graph Metrics:\n"
+            for key, value in metrics.items():
+                if isinstance(value, dict):
+                    metrics_text += f"{key}: {len(value)} entries\n"
+                else:
+                    metrics_text += f"{key}: {value}\n"
+            
+            self.graph_metrics.setText(metrics_text)
+            self.graph_display.setText(f"Graph generated with {metrics.get('num_nodes', 0)} nodes and {metrics.get('num_edges', 0)} edges")
+            
+            self.status_label.setText("Network graph generated successfully")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to generate graph: {str(e)}")
+    
+    def export_network_graph(self):
+        if self.network_graph is None:
+            QMessageBox.warning(self, "Warning", "Network graph feature not available")
+            return
+        
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Export Network Graph", 
+            "network_graph.png", 
+            "PNG files (*.png);;GEXF files (*.gexf);;GraphML files (*.graphml)"
+        )
+        
+        if filename:
+            try:
+                if filename.endswith('.png'):
+                    self.network_graph.visualize(filename)
+                elif filename.endswith('.gexf'):
+                    self.network_graph.export_graph(filename, 'gexf')
+                elif filename.endswith('.graphml'):
+                    self.network_graph.export_graph(filename, 'graphml')
+                
+                QMessageBox.information(self, "Success", f"Graph exported to {filename}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to export graph: {str(e)}")
+    
+    # Content Analysis handlers
+    def perform_classification(self):
+        if self.content_classifier is None:
+            QMessageBox.warning(self, "Warning", "Content classification not available. Install transformers library.")
+            return
+        
+        text = self.classify_text.toPlainText().strip()
+        if not text:
+            QMessageBox.warning(self, "Warning", "Please enter text to classify")
+            return
+        
+        classify_type = self.classify_type.currentText().lower()
+        
+        try:
+            if classify_type == 'sentiment':
+                result = self.content_classifier.classify_sentiment(text)
+                output = f"Sentiment Analysis:\n"
+                output += f"Label: {result.get('label', 'N/A')}\n"
+                output += f"Score: {result.get('score', 'N/A'):.4f}\n"
+            elif classify_type == 'topic':
+                topics = [t.strip() for t in self.topic_labels.text().split(',') if t.strip()]
+                if not topics:
+                    QMessageBox.warning(self, "Warning", "Please enter topic labels")
+                    return
+                
+                result = self.content_classifier.classify_topic(text, topics)
+                output = f"Topic Classification:\n"
+                output += f"Top Topic: {result.get('top_topic', 'N/A')}\n"
+                output += f"Confidence: {result.get('confidence', 'N/A'):.4f}\n"
+                output += "\nAll Topics:\n"
+                for topic, score in result.get('all_topics', []):
+                    output += f"  {topic}: {score:.4f}\n"
+            
+            self.analysis_results.setText(output)
+            self.status_label.setText("Classification complete")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Classification failed: {str(e)}")
+    
+    def perform_ner(self):
+        if self.ner is None:
+            QMessageBox.warning(self, "Warning", "NER not available. Install spaCy and download model.")
+            return
+        
+        text = self.ner_text.toPlainText().strip()
+        if not text:
+            QMessageBox.warning(self, "Warning", "Please enter text for NER")
+            return
+        
+        try:
+            entities = self.ner.extract_entities(text)
+            
+            output = "Named Entities:\n\n"
+            for entity_type, entity_list in entities.items():
+                if entity_list:
+                    output += f"{entity_type}:\n"
+                    for entity in entity_list:
+                        output += f"  - {entity['text']} (position {entity['start']}-{entity['end']})\n"
+                    output += "\n"
+            
+            if not any(entities.values()):
+                output = "No entities found."
+            
+            self.analysis_results.setText(output)
+            self.status_label.setText("NER complete")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"NER failed: {str(e)}")
+    
+    # Contact Harvest handlers
+    def perform_contact_extraction(self):
+        text = self.contact_text.toPlainText().strip()
+        if not text:
+            QMessageBox.warning(self, "Warning", "Please enter text or HTML")
+            return
+        
+        try:
+            # Check if it's HTML
+            if '<html' in text.lower() or '<body' in text.lower():
+                results = self.contact_harvester.extract_from_html(text)
+            else:
+                results = self.contact_harvester.extract_contacts(text)
+            
+            output = "Extracted Contacts:\n\n"
+            for contact_type, contacts in results.items():
+                if contacts:
+                    output += f"{contact_type.title()}:\n"
+                    for contact in contacts:
+                        output += f"  - {contact}\n"
+                    output += "\n"
+            
+            if not any(results.values()):
+                output = "No contacts found."
+            
+            self.contact_results.setText(output)
+            self.status_label.setText("Contact extraction complete")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Contact extraction failed: {str(e)}")
+    
+    # Tech Fingerprint handlers
+    def perform_tech_fingerprint(self):
+        url = self.fp_url.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Warning", "Please enter a URL")
+            return
+        
+        html = self.fp_html.toPlainText().strip()
+        
+        try:
+            if not html:
+                # Fetch HTML
+                response = requests.get(url, timeout=10)
+                html = response.text
+                headers = dict(response.headers)
+            else:
+                headers = {}
+            
+            results = self.tech_fingerprinter.fingerprint(url, html, headers)
+            report = self.tech_fingerprinter.generate_report()
+            
+            self.fp_results.setText(report)
+            self.status_label.setText("Technology fingerprinting complete")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Fingerprinting failed: {str(e)}")
+    
+    # Visual Analysis handlers
+    def capture_screenshot(self):
+        if self.visual_analyzer is None:
+            QMessageBox.warning(self, "Warning", "Visual analysis not available. Install PIL and imagehash.")
+            return
+        
+        url = self.screenshot_url.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Warning", "Please enter a URL")
+            return
+        
+        try:
+            screenshot_path = self.visual_analyzer.capture_screenshot(url)
+            if screenshot_path:
+                self.visual_results.setText(f"Screenshot saved to: {screenshot_path}")
+                self.status_label.setText("Screenshot captured")
+            else:
+                self.visual_results.setText("Failed to capture screenshot")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Screenshot failed: {str(e)}")
+    
+    def perform_ocr(self):
+        if self.ocr_engine is None:
+            QMessageBox.warning(self, "Warning", "OCR not available. Install pytesseract and Tesseract.")
+            return
+        
+        image_path = self.ocr_image_path.text().strip()
+        if not image_path:
+            QMessageBox.warning(self, "Warning", "Please enter image path or URL")
+            return
+        
+        try:
+            if image_path.startswith('http'):
+                text = self.ocr_engine.extract_from_url(image_path)
+            else:
+                text = self.ocr_engine.extract_text(image_path)
+            
+            self.visual_results.setText(f"Extracted Text:\n\n{text}")
+            self.status_label.setText("OCR complete")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"OCR failed: {str(e)}")
+    
+    # Temporal Analysis handlers
+    def capture_baseline(self):
+        url = self.baseline_url.text().strip()
+        content = self.baseline_content.toPlainText().strip()
+        
+        if not url or not content:
+            QMessageBox.warning(self, "Warning", "Please enter URL and content")
+            return
+        
+        try:
+            baseline = self.temporal_analyzer.capture_baseline(url, content)
+            self.temporal_results.setText(f"Baseline captured at {baseline['timestamp']}")
+            self.status_label.setText("Baseline captured")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Baseline capture failed: {str(e)}")
+    
+    def detect_changes(self):
+        url = self.baseline_url.text().strip()
+        current_content = self.current_content.toPlainText().strip()
+        
+        if not current_content:
+            QMessageBox.warning(self, "Warning", "Please enter current content")
+            return
+        
+        alert_patterns = None
+        if self.alert_patterns.text().strip():
+            alert_patterns = [p.strip() for p in self.alert_patterns.text().split(',')]
+        
+        try:
+            changes = self.temporal_analyzer.detect_changes(url, current_content, alert_patterns)
+            
+            output = "Change Detection Results:\n\n"
+            output += f"Content Changed: {changes.get('content_changed', False)}\n"
+            output += f"Baseline Timestamp: {changes.get('baseline_timestamp', 'N/A')}\n"
+            output += f"Current Timestamp: {changes.get('timestamp', 'N/A')}\n\n"
+            
+            if changes.get('content_changed'):
+                output += f"Diff:\n{changes.get('text_diff', {}).get('diff', 'N/A')}\n\n"
+                
+                if changes.get('pattern_matches'):
+                    output += "Pattern Matches:\n"
+                    for match in changes['pattern_matches']:
+                        output += f"  - Pattern: {match['pattern']}\n"
+                        output += f"    Match: {match['match']}\n"
+                        output += f"    Position: {match['position']}\n\n"
+            
+            self.temporal_results.setText(output)
+            self.status_label.setText("Change detection complete")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Change detection failed: {str(e)}")
+    
+    # Statistics handlers
+    def generate_statistics(self):
+        if not self.current_results:
+            QMessageBox.warning(self, "Warning", "No crawl results to analyze")
+            return
+        
+        try:
+            # Simulate metrics from crawl results
+            for result in self.current_results:
+                self.statistical_analyzer.record_metric(
+                    url=result.get('url', ''),
+                    response_time=0.5,  # Placeholder
+                    status_code=200,
+                    content_type='text/html',
+                    page_size=len(result.get('content_preview', '')),
+                    outbound_links=[]
+                )
+            
+            report = self.statistical_analyzer.generate_report()
+            self.stats_results.setText(report)
+            self.status_label.setText("Statistics generated")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Statistics generation failed: {str(e)}")
+    
+    # Dashboard handlers
+    def refresh_dashboard(self):
+        if self.dashboard is None:
+            QMessageBox.warning(self, "Warning", "Dashboard not available. Install plotly.")
+            return
+        
+        try:
+            # Add some sample data
+            for i in range(10):
+                self.dashboard.add_data_point(
+                    response_time=0.3 + (i * 0.1),
+                    status_code=200,
+                    pages_crawled=(i + 1) * 5
+                )
+            
+            dashboard_html = self.dashboard.create_dashboard()
+            
+            if QWebEngineView is not None:
+                self.dashboard_view.setHtml(dashboard_html)
+            else:
+                self.dashboard_display.setText(dashboard_html)
+            
+            self.status_label.setText("Dashboard refreshed")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Dashboard refresh failed: {str(e)}")
+    
+    def save_dashboard(self):
+        if self.dashboard is None:
+            QMessageBox.warning(self, "Warning", "Dashboard not available")
+            return
+        
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save Dashboard", 
+            "dashboard.html", 
+            "HTML files (*.html)"
+        )
+        
+        if filename:
+            try:
+                self.dashboard.save_dashboard(filename)
+                QMessageBox.information(self, "Success", f"Dashboard saved to {filename}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save dashboard: {str(e)}")
 
 # Worker classes for new features
 class MultiEngineWorker(QThread):
