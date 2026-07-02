@@ -38,6 +38,10 @@ try:
     import whois
 except ImportError:
     whois = None
+try:
+    from censys.search import v2
+except ImportError:
+    v2 = None
 
 # Advanced feature imports
 try:
@@ -901,6 +905,9 @@ class Crawler(CancellableOperation):
             soup = BeautifulSoup(html_content, 'html.parser')
             page_text = self.extract_text(soup)
             
+            # Calculate content hash
+            content_hash = hashlib.sha256(page_text.encode()).hexdigest() if page_text else ''
+            
             # Content fingerprinting
             content_simhash = self._compute_simhash(page_text)
             if content_simhash is not None:
@@ -1146,6 +1153,9 @@ class Crawler(CancellableOperation):
                 if 'text/html' in content_type:
                     soup = BeautifulSoup(response.text, 'html.parser')
                     page_text = self.extract_text(soup)
+                    
+                    # Calculate content hash
+                    content_hash = hashlib.sha256(page_text.encode()).hexdigest() if page_text else ''
                     
                     # Content fingerprinting
                     content_simhash = self._compute_simhash(page_text)
@@ -1502,9 +1512,15 @@ class Exporter:
     
     def export_to_json(self, data: List[Dict], filepath: str) -> bool:
         """Export data to JSON format."""
+        class SetEncoder(json.JSONEncoder):
+            def default(self, obj):
+                if isinstance(obj, set):
+                    return list(obj)
+                return super().default(obj)
+        
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+                json.dump(data, f, indent=2, ensure_ascii=False, cls=SetEncoder)
             return True
         except Exception as e:
             print(f"Error exporting to JSON: {e}")
@@ -2535,70 +2551,504 @@ class ContactHarvester:
         self.patterns[name] = pattern
 
 class TechnologyStackFingerprinter:
-    """Detect CMS, JS frameworks, web servers, analytics (Wappalyzer-style)."""
+    """Detect CMS, JS frameworks, web servers, analytics, and versions (Wappalyzer-style)."""
     
     TECHNOLOGY_SIGNATURES = {
         'cms': {
-            'WordPress': ['wp-content', 'wp-includes', '/wordpress/'],
-            'Drupal': ['drupal', 'sites/default/files'],
-            'Joomla': ['joomla', '/components/'],
-            'Magento': ['magento', '/skin/'],
-            'Shopify': ['shopify', 'cdn.shopify.com'],
+            'WordPress': ['wp-content', 'wp-includes', '/wordpress/', 'wp-json'],
+            'Drupal': ['drupal', 'sites/default/files', 'drupal.js'],
+            'Joomla': ['joomla', '/components/', 'joomla.js'],
+            'Magento': ['magento', '/skin/', 'mage/'],
+            'Shopify': ['shopify', 'cdn.shopify.com', 'Shopify.theme'],
             'Squarespace': ['squarespace', 'static1.squarespace.com'],
-            'Wix': ['wix', 'static.wixstatic.com'],
+            'Wix': ['wix', 'static.wixstatic.com', 'wix-code'],
+            'Ghost': ['ghost', 'ghost-url'],
+            'HubSpot': ['hubspot', 'hs-scripts', 'hubspot.net'],
+            'TYPO3': ['typo3', 't3lib'],
+            'Concrete5': ['concrete5', 'concrete/'],
+            'Blogger': ['blogger', 'blogspot.com'],
+            'Medium': ['medium.com', 'medium-widget'],
+            'Tumblr': ['tumblr', 'tumblr.com'],
+            'Weebly': ['weebly', 'weebly-static'],
+            'Webflow': ['webflow', 'w-webflow'],
+            'Statamic': ['statamic', 'statamic/'],
+            'Craft CMS': ['craft', 'craftcms'],
+            'October CMS': ['october', 'octobercms'],
+            'Grav': ['grav', 'user/themes'],
+            'Hugo': ['hugo', 'hugo.io'],
+            'Jekyll': ['jekyll', 'jekyll-seo'],
         },
         'javascript_frameworks': {
-            'React': ['react', 'react-dom', '_react'],
-            'Vue.js': ['vue', 'Vue', 'v-if'],
-            'Angular': ['angular', 'ng-app', 'ng-controller'],
+            'React': ['react', 'react-dom', '_react', 'reactjs'],
+            'Vue.js': ['vue', 'Vue', 'v-if', 'vue-router'],
+            'Angular': ['angular', 'ng-app', 'ng-controller', 'angularjs'],
+            'Angular (Modern)': ['@angular/core', 'ng-version'],
             'jQuery': ['jquery', '$(', 'jQuery'],
-            'Ember.js': ['ember', 'Ember'],
+            'Ember.js': ['ember', 'Ember', 'ember-cli'],
             'Backbone.js': ['backbone', 'Backbone'],
             'Svelte': ['svelte', 'Svelte'],
+            'Alpine.js': ['alpine', 'x-data', '@alpinejs'],
+            'SolidJS': ['solid-js', 'solid-js'],
+            'Preact': ['preact', 'preact/compat'],
+            'Lit': ['lit-html', 'lit-element'],
+            'Stencil': ['stencil', '@stencil/core'],
+            'Aurelia': ['aurelia', 'aurelia-framework'],
+            'Mithril': ['mithril', 'mithril.js'],
+            'Riot': ['riot', 'riot.js'],
+            'Knockout.js': ['knockout', 'ko.applyBindings'],
+            'Polymer': ['polymer', '@polymer'],
+            'Meteor': ['meteor', 'meteor.js'],
+            'Nuxt.js': ['nuxt', 'nuxt.js', '__nuxt'],
+            'Next.js': ['next', 'next.js', '__next'],
+            'Gatsby': ['gatsby', 'gatsby.js'],
+            'Remix': ['remix', '@remix-run'],
+            'SvelteKit': ['svelte-kit', '__sveltekit'],
         },
         'web_servers': {
             'Apache': ['Apache', 'Server: Apache'],
             'Nginx': ['nginx', 'Server: nginx'],
             'IIS': ['IIS', 'Microsoft-IIS'],
             'Cloudflare': ['cloudflare', 'cf-ray'],
+            'LiteSpeed': ['litespeed', 'lshttpd'],
+            'Caddy': ['caddy', 'Caddy'],
+            'OpenResty': ['openresty', 'ngx_openresty'],
+            'Tengine': ['tengine', 'Tengine'],
+            'Envoy': ['envoy', 'Envoy'],
+            'Traefik': ['traefik', 'Traefik'],
+            'HAProxy': ['haproxy', 'HAProxy'],
+            'Varnish': ['varnish', 'Varnish'],
+            'Node.js': ['node', 'Express'],
+            'Python HTTP': ['python', 'SimpleHTTP'],
+            'Gunicorn': ['gunicorn', 'Gunicorn'],
+            'uWSGI': ['uwsgi', 'uWSGI'],
+            'Passenger': ['passenger', 'Phusion'],
         },
         'analytics': {
-            'Google Analytics': ['google-analytics.com', 'ga.js', 'gtag.js'],
+            'Google Analytics': ['google-analytics.com', 'ga.js', 'gtag.js', 'analytics.js'],
             'Google Tag Manager': ['googletagmanager.com', 'GTM-'],
             'Hotjar': ['hotjar.com', 'hj'],
             'Mixpanel': ['mixpanel.com', 'mixpanel'],
             'Segment': ['segment.com', 'analytics.js'],
+            'Amplitude': ['amplitude.com', 'amplitude'],
+            'Heap': ['heapanalytics.com', 'heap'],
+            'FullStory': ['fullstory.com', 'fs.js'],
+            'Mouseflow': ['mouseflow.com', 'mouseflow'],
+            'Crazy Egg': ['crazyegg.com', 'crazyegg'],
+            'Clicky': ['getclicky.com', 'clicky'],
+            'StatCounter': ['statcounter.com', 'statcounter'],
+            'Piwik PRO': ['piwik.pro', 'piwik'],
+            'Matomo': ['matomo', 'matomo.js'],
+            'Plausible': ['plausible.io', 'plausible'],
+            'Fathom': ['usefathom.com', 'fathom'],
+            'PostHog': ['posthog.com', 'posthog'],
+            'Pendo': ['pendo.io', 'pendo'],
+            'Lucky Orange': ['luckyorange.com', 'luckyorange'],
+            'UserZoom': ['userzoom.com', 'userzoom'],
         },
         'cdn': {
             'Cloudflare': ['cloudflare', 'cf-ray'],
             'CloudFront': ['cloudfront.net'],
             'Akamai': ['akamai', 'akamaihd.net'],
             'Fastly': ['fastly', 'fastly.net'],
-        }
+            'Azure CDN': ['azureedge.net', 'azurecdn'],
+            'AWS CloudFront': ['cloudfront.net', 'awscloud'],
+            'Google Cloud CDN': ['googlehosted.com', 'gstatic'],
+            'KeyCDN': ['keycdn.com', 'keycdn'],
+            'MaxCDN': ['maxcdn.com', 'maxcdn'],
+            'CDN77': ['cdn77.com', 'cdn77'],
+            'BunnyCDN': ['b-cdn.net', 'bunnycdn'],
+            'StackPath': ['stackpath.com', 'stackpath'],
+            'Edgecast': ['edgecastcdn.net', 'edgecast'],
+            'Limelight': ['llnwd.net', 'limelight'],
+            'Incapsula': ['incapsula', 'incapsula'],
+            'Sucuri': ['sucuri.net', 'sucuri'],
+        },
+        'databases': {
+            'MySQL': ['mysql', 'mysqli'],
+            'PostgreSQL': ['postgresql', 'postgres'],
+            'MongoDB': ['mongodb', 'mongo'],
+            'Redis': ['redis', 'redis.io'],
+            'SQLite': ['sqlite', 'sqlite3'],
+            'Elasticsearch': ['elasticsearch', 'elastic'],
+            'Cassandra': ['cassandra', 'datastax'],
+            'DynamoDB': ['dynamodb', 'amazonaws/dynamodb'],
+            'CouchDB': ['couchdb', 'apache/couchdb'],
+            'Neo4j': ['neo4j', 'neo4j.com'],
+            'MariaDB': ['mariadb', 'mariadb.org'],
+            'Oracle': ['oracle', 'oracle.com'],
+            'SQL Server': ['sql server', 'microsoft sql'],
+            'Firebase': ['firebase', 'firebaseio.com'],
+            'Supabase': ['supabase', 'supabase.co'],
+        },
+        'programming_languages': {
+            'PHP': ['php', '.php'],
+            'Python': ['python', 'py', 'django'],
+            'Ruby': ['ruby', 'rails', 'rubyonrails'],
+            'Java': ['java', 'jsp', 'servlet'],
+            'Node.js': ['node', 'node.js', 'express'],
+            'Go': ['golang', 'go-'],
+            'Rust': ['rust', 'wasm-bindgen'],
+            'C#': ['asp.net', '.net', 'csharp'],
+            'TypeScript': ['typescript', '.ts'],
+            'Scala': ['scala', 'scalajs'],
+            'Kotlin': ['kotlin', 'ktor'],
+            'Swift': ['swift', 'vapor'],
+            'Elixir': ['elixir', 'phoenix'],
+            'Clojure': ['clojure', 'clojurescript'],
+        },
+        'ui_frameworks': {
+            'Bootstrap': ['bootstrap', 'bootstrap.css'],
+            'Tailwind CSS': ['tailwindcss', 'tailwind'],
+            'Foundation': ['foundation', 'foundation.css'],
+            'Bulma': ['bulma', 'bulma.css'],
+            'Material UI': ['material-ui', '@mui/material'],
+            'Ant Design': ['antd', 'ant-design'],
+            'Semantic UI': ['semantic', 'semantic-ui'],
+            'UI Kit': ['uikit', 'uikit.css'],
+            'Pure CSS': ['purecss', 'pure.css'],
+            'Spectre.css': ['spectre', 'spectre.css'],
+            'Picnic CSS': ['picnicss', 'picnic'],
+            'Milligram': ['milligram', 'milligram'],
+            'Skeleton': ['skeleton', 'skeleton.css'],
+            'Primer': ['primer', 'primer.css'],
+            'Water.css': ['water.css', 'water'],
+            'PaperCSS': ['papercss', 'paper.css'],
+            'Chakra UI': ['@chakra-ui', 'chakra-ui'],
+            'Mantine': ['@mantine/core', 'mantine'],
+            'Shadcn/ui': ['shadcn', 'shadcn-ui'],
+            'Radix UI': ['@radix-ui', 'radix-ui'],
+        },
+        'css_frameworks': {
+            'Sass': ['scss', 'sass'],
+            'Less': ['less', 'lesscss'],
+            'Stylus': ['stylus', 'styl'],
+            'PostCSS': ['postcss', 'postcss-'],
+            'Tailwind CSS': ['tailwindcss', 'tailwind'],
+            'Bootstrap': ['bootstrap', 'bootstrap.css'],
+        },
+        'build_tools': {
+            'Webpack': ['webpack', '__webpack'],
+            'Vite': ['vite', 'vite/'],
+            'Rollup': ['rollup', 'rollup.js'],
+            'Parcel': ['parcel', 'parcel.js'],
+            'esbuild': ['esbuild', 'esbuild-'],
+            'Babel': ['babel', 'babel-'],
+            'Gulp': ['gulp', 'gulpfile'],
+            'Grunt': ['grunt', 'gruntfile'],
+            'Browserify': ['browserify', 'browserify-'],
+            'Snowpack': ['snowpack', 'snowpack/'],
+            'Turbopack': ['turbo', 'turbopack'],
+            'Rome': ['rome', 'rome-'],
+            'SWC': ['swc', '@swc'],
+        },
+        'testing_frameworks': {
+            'Jest': ['jest', '@jest'],
+            'Mocha': ['mocha', 'mocha.js'],
+            'Chai': ['chai', 'chai.js'],
+            'Jasmine': ['jasmine', 'jasmine.js'],
+            'Cypress': ['cypress', '@cypress'],
+            'Playwright': ['playwright', '@playwright'],
+            'Selenium': ['selenium', 'selenium-'],
+            'Puppeteer': ['puppeteer', '@puppeteer'],
+            'Testing Library': ['testing-library', '@testing-library'],
+            'Vitest': ['vitest', '@vitest'],
+            'Karma': ['karma', 'karma-'],
+            'Protractor': ['protractor', '@angular/protractor'],
+        },
+        'caching': {
+            'Varnish': ['varnish', 'Varnish'],
+            'Redis': ['redis', 'redis.io'],
+            'Memcached': ['memcached', 'memcache'],
+            'Squid': ['squid', 'squid/'],
+            'Cloudflare': ['cloudflare', 'cf-ray'],
+            'Fastly': ['fastly', 'fastly.net'],
+            'Akamai': ['akamai', 'akamaihd.net'],
+        },
+        'security': {
+            'Cloudflare WAF': ['cloudflare', 'cf-ray'],
+            'Akamai WAF': ['akamai', 'akamaihd.net'],
+            'ModSecurity': ['modsecurity', 'mod_security'],
+            'AWS WAF': ['aws-waf', 'amazonaws/waf'],
+            'Sucuri WAF': ['sucuri', 'sucuri/firewall'],
+            'Incapsula': ['incapsula', 'incapsula/waf'],
+            'Fastly WAF': ['fastly', 'fastly.net/waf'],
+            'Imperva': ['imperva', 'incapsula'],
+            'Radware': ['radware', 'radware.com'],
+            'Fortinet': ['fortinet', 'fortiguard'],
+        },
+        'ecommerce': {
+            'Shopify': ['shopify', 'cdn.shopify.com', 'Shopify.theme'],
+            'Magento': ['magento', '/skin/', 'mage/'],
+            'WooCommerce': ['woocommerce', 'wc-', 'wp-content/plugins/woocommerce'],
+            'BigCommerce': ['bigcommerce', 'cdn.bigcommerce.com'],
+            'PrestaShop': ['prestashop', 'prestashop.com'],
+            'OpenCart': ['opencart', 'catalog/'],
+            'Zen Cart': ['zen cart', 'zen-cart'],
+            'osCommerce': ['oscommerce', 'oscommerce'],
+            'Salesforce Commerce': ['demandware', 'dwre'],
+            'SAP Commerce': ['sap', 'hybris'],
+            'Oracle Commerce': ['oracle', 'atg'],
+        },
+        'marketing': {
+            'HubSpot': ['hubspot', 'hs-scripts', 'hubspot.net'],
+            'Marketo': ['marketo', 'marketo.com'],
+            'Pardot': ['pardot', 'pi.pardot.com'],
+            'Eloqua': ['eloqua', 'eloqua.com'],
+            'ActiveCampaign': ['activecampaign', 'activecampaign.com'],
+            'Mailchimp': ['mailchimp', 'mc.js'],
+            'Constant Contact': ['constantcontact', 'constantcontact.com'],
+            'GetResponse': ['getresponse', 'getresponse.com'],
+            'AWeber': ['aweber', 'aweber.com'],
+            'ConvertKit': ['convertkit', 'convertkit.com'],
+        },
+        'chat': {
+            'Intercom': ['intercom', 'intercom.io'],
+            'Drift': ['drift', 'drift.com'],
+            'Zendesk Chat': ['zendesk', 'zopim.com'],
+            'LiveChat': ['livechat', 'livechatinc.com'],
+            'Tawk.to': ['tawk.to', 'tawk'],
+            'Crisp': ['crisp', 'crisp.chat'],
+            'Freshchat': ['freshchat', 'freshworks.com'],
+            'Pure Chat': ['purechat', 'purechat.com'],
+            'Userlike': ['userlike', 'userlike.com'],
+            'SnapEngage': ['snapengage', 'snapengage.com'],
+        },
+        'cms_plugins': {
+            'Yoast SEO': ['yoast', 'yoast-seo'],
+            'All in One SEO': ['aioseo', 'all-in-one-seo'],
+            'Jetpack': ['jetpack', 'jetpack-'],
+            'Elementor': ['elementor', 'elementor-'],
+            'Divi': ['divi', 'et-'],
+            'WPBakery': ['js_composer', 'wpbakery'],
+            'Visual Composer': ['visual-composer', 'vc-'],
+            'Contact Form 7': ['contact-form-7', 'wpcf7'],
+            'Gravity Forms': ['gravityforms', 'gform'],
+            'Ninja Forms': ['ninja-forms', 'nf-'],
+        },
+        'headless_cms': {
+            'Contentful': ['contentful', 'contentful.com'],
+            'Strapi': ['strapi', 'strapi.io'],
+            'Sanity': ['sanity', 'sanity.io'],
+            'Prismic': ['prismic', 'prismic.io'],
+            'Ghost': ['ghost', 'ghost-url'],
+            'ButterCMS': ['buttercms', 'buttercms.com'],
+            'Cosmic': ['cosmicjs', 'cosmicjs.com'],
+            'Directus': ['directus', 'directus.io'],
+            'Keystone': ['keystone', 'keystonejs.com'],
+            'Payload': ['payloadcms', 'payloadcms.com'],
+        },
+        'authentication': {
+            'Auth0': ['auth0', 'auth0.com'],
+            'Okta': ['okta', 'okta.com'],
+            'Firebase Auth': ['firebase', 'firebaseio.com'],
+            'AWS Cognito': ['amazonaws/cognito', 'cognito'],
+            'Azure AD': ['azuread', 'microsoftonline'],
+            'Keycloak': ['keycloak', 'keycloak.org'],
+            'Passport.js': ['passport', 'passport-'],
+            'NextAuth': ['next-auth', 'next-auth'],
+            'Supabase Auth': ['supabase', 'supabase.co'],
+            'Clerk': ['clerk', 'clerk.com'],
+        },
+        'monitoring': {
+            'New Relic': ['newrelic', 'nr-data'],
+            'Datadog': ['datadog', 'datadoghq'],
+            'Sentry': ['sentry', 'sentry.io'],
+            'LogRocket': ['logrocket', 'logrocket.com'],
+            'Rollbar': ['rollbar', 'rollbar.com'],
+            'Bugsnag': ['bugsnag', 'bugsnag.com'],
+            'AppDynamics': ['appdynamics', 'appdynamics.com'],
+            'Dynatrace': ['dynatrace', 'dynatrace.com'],
+            'Prometheus': ['prometheus', 'prometheus.io'],
+            'Grafana': ['grafana', 'grafana.com'],
+        },
+        'search': {
+            'Algolia': ['algolia', 'algolia.net'],
+            'Elasticsearch': ['elasticsearch', 'elastic'],
+            'Solr': ['solr', 'apache/solr'],
+            'Azure Search': ['azuresearch', 'search.windows.net'],
+            'Google Custom Search': ['google.com/cse', 'gcse'],
+            'Swiftype': ['swiftype', 'swiftype.com'],
+            'Typesense': ['typesense', 'typesense.org'],
+            'Meilisearch': ['meilisearch', 'meilisearch.com'],
+            'Lunr.js': ['lunr', 'lunr.js'],
+            'FlexSearch': ['flexsearch', 'flexsearch'],
+        },
+        'maps': {
+            'Google Maps': ['maps.googleapis.com', 'google-maps'],
+            'Mapbox': ['mapbox', 'mapbox.com'],
+            'Leaflet': ['leaflet', 'leaflet.js'],
+            'OpenLayers': ['openlayers', 'ol.js'],
+            'Mapbox GL': ['mapbox-gl', 'mapbox-gl-js'],
+            'Carto': ['carto', 'carto.com'],
+            'HERE Maps': ['here.com', 'here-maps'],
+            'Bing Maps': ['bing.com/maps', 'bing-maps'],
+        },
+        'payment': {
+            'Stripe': ['stripe', 'stripe.com', 'js.stripe.com'],
+            'PayPal': ['paypal', 'paypal.com', 'paypalobjects.com'],
+            'Square': ['square', 'squareup.com'],
+            'Braintree': ['braintree', 'braintree-api'],
+            'Adyen': ['adyen', 'adyen.com'],
+            'Authorize.net': ['authorize.net', 'authorizenet'],
+            'Worldpay': ['worldpay', 'worldpay.com'],
+            'Checkout.com': ['checkout.com', 'checkout'],
+            'Razorpay': ['razorpay', 'razorpay.com'],
+            'Stripe Elements': ['stripe.elements', 'stripe-js'],
+        },
+        'icons': {
+            'Font Awesome': ['fontawesome', 'fa-', 'font-awesome'],
+            'Material Icons': ['material-icons', 'materialicons'],
+            'Ionicons': ['ionicons', 'ion-'],
+            'Feather Icons': ['feather-icons', 'feather'],
+            'Heroicons': ['heroicons', 'hero-'],
+            'Lucide': ['lucide', 'lucide-'],
+            'Octicons': ['octicons', 'octicon'],
+            'Phosphor Icons': ['phosphor-icons', 'phosphor'],
+            'Remix Icon': ['remixicon', 'ri-'],
+            'Tabler Icons': ['tabler-icons', 'tabler-'],
+        },
+        'fonts': {
+            'Google Fonts': ['fonts.googleapis.com', 'fonts.gstatic.com'],
+            'Adobe Fonts': ['use.typekit.net', 'typekit'],
+            'Fontdeck': ['fontdeck.com', 'fontdeck'],
+            'Fonts.com': ['fonts.com', 'monotype'],
+            'MyFonts': ['myfonts.com', 'myfonts'],
+            'Fontspring': ['fontspring.com', 'fontspring'],
+            'Typekit': ['typekit', 'use.typekit.net'],
+        },
+        'video': {
+            'YouTube': ['youtube.com', 'youtube-nocookie.com'],
+            'Vimeo': ['vimeo.com', 'player.vimeo.com'],
+            'Wistia': ['wistia.com', 'wistia'],
+            'Brightcove': ['brightcove', 'bcove'],
+            'JW Player': ['jwplayer', 'jwplayer.com'],
+            'Video.js': ['video.js', 'videojs'],
+            'Plyr': ['plyr', 'plyr.io'],
+            'Dailymotion': ['dailymotion', 'dmcdn'],
+            'Twitch': ['twitch.tv', 'twitch-'],
+        },
+        'social': {
+            'Facebook': ['facebook.com', 'fb-', 'facebook'],
+            'Twitter': ['twitter.com', 'twitter-', 'x.com'],
+            'LinkedIn': ['linkedin.com', 'linkedin-'],
+            'Instagram': ['instagram.com', 'instagram-'],
+            'Pinterest': ['pinterest.com', 'pinterest-'],
+            'TikTok': ['tiktok.com', 'tiktok-'],
+            'WhatsApp': ['whatsapp.com', 'whatsapp-'],
+            'Telegram': ['telegram.org', 'telegram-'],
+            'Reddit': ['reddit.com', 'reddit-'],
+            'Discord': ['discord.com', 'discord-'],
+        },
+    }
+    
+    VERSION_PATTERNS = {
+        'WordPress': [r'wp-emoji-release\.min\.js\?ver=(\d+\.\d+\.\d+)', r'wp-includes/css/dist/block-library/style\.min\.css\?ver=(\d+\.\d+\.\d+)'],
+        'Drupal': [r'Drupal\.settings\s*=\s*\{[^}]*"version":"(\d+\.\d+)"', r'/core/misc/drupal\.js\?v=(\d+\.\d+)'],
+        'Joomla': [r'/media/jui/js/jquery\.min\.js\?(\d+\.\d+\.\d+)', r'Joomla\.version\s*=\s*"(\d+\.\d+)"'],
+        'Magento': [r'/js/mage/\.js\?v=(\d+\.\d+\.\d+)', r'Magento\.version\s*=\s*"(\d+\.\d+\.\d+)"'],
+        'React': [r'react-dom/(\d+\.\d+\.\d+)', r'react/(\d+\.\d+\.\d+)'],
+        'Vue.js': [r'vue/(\d+\.\d+\.\d+)', r'vue\.min\.js\?(\d+\.\d+\.\d+)'],
+        'Angular': [r'angular/(\d+\.\d+\.\d+)', r'angular\.min\.js\?(\d+\.\d+\.\d+)'],
+        'Angular (Modern)': [r'@angular/core/(\d+\.\d+\.\d+)', r'ng-version="(\d+\.\d+\.\d+)"'],
+        'jQuery': [r'jquery/(\d+\.\d+\.\d+)', r'jquery\.min\.js\?(\d+\.\d+\.\d+)'],
+        'Bootstrap': [r'bootstrap/(\d+\.\d+\.\d+)', r'bootstrap\.css\?(\d+\.\d+\.\d+)'],
+        'Tailwind CSS': [r'tailwindcss/(\d+\.\d+\.\d+)', r'tailwind\.css\?(\d+\.\d+\.\d+)'],
+        'Laravel': [r'laravel/(\d+\.\d+\.\d+)', r'XSRF-TOKEN.*laravel'],
+        'Django': [r'django/(\d+\.\d+\.\d+)', r'csrftoken.*django'],
+        'Rails': [r'rails/(\d+\.\d+\.\d+)', r'rails-ujs'],
+        'Express': [r'express/(\d+\.\d+\.\d+)', r'X-Powered-By: Express'],
+        'Nginx': [r'nginx/(\d+\.\d+\.\d+)', r'Server: nginx/(\d+\.\d+\.\d+)'],
+        'Apache': [r'Apache/(\d+\.\d+\.\d+)', r'Server: Apache/(\d+\.\d+\.\d+)'],
+        'PHP': [r'PHP/(\d+\.\d+\.\d+)', r'X-Powered-By: PHP/(\d+\.\d+\.\d+)'],
+        'Node.js': [r'Node\.js/(\d+\.\d+\.\d+)', r'X-Powered-By: Node'],
+        'WordPress': [r'generator" content="WordPress (\d+\.\d+\.\d+)"', r'wp-'],
+        'Drupal': [r'generator" content="Drupal (\d+)"', r'Drupal.settings'],
+        'Joomla': [r'generator" content="Joomla! (\d+\.\d+)"', r'/media/jui/'],
+        'Shopify': [r'Shopify\.theme\s*=\s*[^}]*"name":"[^"]*","version":"([^"]+)"'],
+        'Ghost': [r'@tryghost/[^/]+/(\d+\.\d+\.\d+)'],
+        'HubSpot': [r'hs-scripts/(\d+\.\d+\.\d+)'],
+        'Strapi': [r'strapi/(\d+\.\d+\.\d+)'],
+        'Contentful': [r'contentful\.js\?v=(\d+\.\d+\.\d+)'],
+        'Auth0': [r'auth0/(\d+\.\d+\.\d+)'],
+        'Okta': [r'okta/(\d+\.\d+\.\d+)'],
+        'Stripe': [r'stripe/(\d+\.\d+\.\d+)', r'js\.stripe\.com/v3/'],
+        'Google Analytics': [r'ga\.js\?v=(\w+)', r'gtag/js\?id='],
+        'Sentry': [r'sentry/(\d+\.\d+\.\d+)', r'browser\.sentry-cdn\.com/(\d+\.\d+\.\d+)'],
+        'Datadog': [r'datadog-rum/(\d+\.\d+\.\d+)'],
+        'New Relic': [r'nr-(\d+)\.min\.js'],
+        'Webpack': [r'webpack/(\d+\.\d+\.\d+)', r'__webpack_require__'],
+        'Vite': [r'vite/(\d+\.\d+\.\d+)', r'/@vite/'],
+        'Babel': [r'babel/(\d+\.\d+\.\d+)', r'babel-standalone/(\d+\.\d+\.\d+)'],
+        'TypeScript': [r'typescript/(\d+\.\d+\.\d+)', r'\.ts\?v=(\d+\.\d+\.\d+)'],
+        'Font Awesome': [r'font-awesome/(\d+\.\d+\.\d+)', r'fa\.css\?v=(\d+\.\d+\.\d+)'],
+        'Material Icons': [r'material-icons/(\d+\.\d+\.\d+)'],
+        'Leaflet': [r'leaflet/(\d+\.\d+\.\d+)', r'leaflet\.css\?v=(\d+\.\d+\.\d+)'],
+        'Mapbox': [r'mapbox-gl-js/(\d+\.\d+\.\d+)', r'mapbox\.css\?v=(\d+\.\d+\.\d+)'],
+        'Chart.js': [r'chart\.js/(\d+\.\d+\.\d+)', r'Chart\.js/(\d+\.\d+\.\d+)'],
+        'D3.js': [r'd3/(\d+\.\d+\.\d+)', r'd3\.min\.js\?v=(\d+\.\d+\.\d+)'],
+        'Three.js': [r'three/(\d+\.\d+\.\d+)', r'three\.min\.js\?v=(\d+\.\d+\.\d+)'],
+        'Moment.js': [r'moment/(\d+\.\d+\.\d+)', r'moment\.min\.js\?v=(\d+\.\d+\.\d+)'],
+        'Lodash': [r'lodash/(\d+\.\d+\.\d+)', r'lodash\.min\.js\?v=(\d+\.\d+\.\d+)'],
+        'Axios': [r'axios/(\d+\.\d+\.\d+)', r'axios\.min\.js\?v=(\d+\.\d+\.\d+)'],
+        'Socket.io': [r'socket\.io/(\d+\.\d+\.\d+)', r'socket\.io\.js\?v=(\d+\.\d+\.\d+)'],
+        'Redis': [r'redis/(\d+\.\d+\.\d+)', r'Redis version=(\d+\.\d+\.\d+)'],
+        'MongoDB': [r'mongodb/(\d+\.\d+\.\d+)', r'MongoDB version=(\d+\.\d+\.\d+)'],
+        'PostgreSQL': [r'postgresql/(\d+\.\d+\.\d+)', r'PostgreSQL (\d+\.\d+)'],
+        'MySQL': [r'mysql/(\d+\.\d+\.\d+)', r'MySQL/(\d+\.\d+\.\d+)'],
+        'Elasticsearch': [r'elasticsearch/(\d+\.\d+\.\d+)', r'Elasticsearch/(\d+\.\d+\.\d+)'],
     }
     
     def __init__(self):
         self.detected_technologies = {}
+        self.detected_versions = {}
+    
+    def detect_version(self, tech: str, html_content: str, headers: Dict) -> Optional[str]:
+        """Detect version of a technology using regex patterns."""
+        if tech not in self.VERSION_PATTERNS:
+            return None
+        
+        # Check in HTML content
+        for pattern in self.VERSION_PATTERNS[tech]:
+            try:
+                import re
+                match = re.search(pattern, html_content, re.IGNORECASE)
+                if match:
+                    return match.group(1)
+            except Exception:
+                continue
+        
+        # Check in headers
+        headers_str = str(headers)
+        for pattern in self.VERSION_PATTERNS[tech]:
+            try:
+                import re
+                match = re.search(pattern, headers_str, re.IGNORECASE)
+                if match:
+                    return match.group(1)
+            except Exception:
+                continue
+        
+        return None
     
     def fingerprint(self, url: str, html_content: str, headers: Dict) -> Dict:
-        """Fingerprint technology stack from URL, HTML, and headers."""
-        results = {
-            'cms': [],
-            'javascript_frameworks': [],
-            'web_servers': [],
-            'analytics': [],
-            'cdn': []
-        }
+        """Fingerprint technology stack from URL, HTML, and headers with version detection."""
+        # Initialize results for all categories
+        results = {category: [] for category in self.TECHNOLOGY_SIGNATURES.keys()}
+        self.detected_versions = {}
         
-        # Check headers
+        # Check headers for web servers
         server_header = headers.get('Server', '').lower()
         for tech, signatures in self.TECHNOLOGY_SIGNATURES['web_servers'].items():
             for sig in signatures:
                 if sig.lower() in server_header:
                     if tech not in results['web_servers']:
                         results['web_servers'].append(tech)
+                        # Try to detect version
+                        version = self.detect_version(tech, html_content, headers)
+                        if version:
+                            self.detected_versions[tech] = version
         
-        # Check HTML content
+        # Check HTML content for all categories except web_servers
         html_lower = html_content.lower()
         
         for category, technologies in self.TECHNOLOGY_SIGNATURES.items():
@@ -2610,20 +3060,46 @@ class TechnologyStackFingerprinter:
                     if sig.lower() in html_lower:
                         if tech not in results[category]:
                             results[category].append(tech)
+                            # Try to detect version
+                            version = self.detect_version(tech, html_content, headers)
+                            if version:
+                                self.detected_versions[tech] = version
         
-        # Check URL patterns
+        # Check URL patterns for CMS
         url_lower = url.lower()
         for tech, signatures in self.TECHNOLOGY_SIGNATURES['cms'].items():
             for sig in signatures:
                 if sig.lower() in url_lower:
                     if tech not in results['cms']:
                         results['cms'].append(tech)
+                        # Try to detect version
+                        version = self.detect_version(tech, html_content, headers)
+                        if version:
+                            self.detected_versions[tech] = version
+        
+        # Check meta tags for generator information
+        try:
+            import re
+            generator_match = re.search(r'<meta\s+name=["\']generator["\']\s+content=["\']([^"\']+)["\']', html_content, re.IGNORECASE)
+            if generator_match:
+                generator_content = generator_match.group(1).lower()
+                # Check if generator matches any CMS
+                for tech in self.TECHNOLOGY_SIGNATURES['cms'].keys():
+                    if tech.lower() in generator_content:
+                        if tech not in results['cms']:
+                            results['cms'].append(tech)
+                        # Extract version from generator if available
+                        version_match = re.search(r'(\d+\.\d+\.?\d*)', generator_content)
+                        if version_match:
+                            self.detected_versions[tech] = version_match.group(1)
+        except Exception:
+            pass
         
         self.detected_technologies = results
         return results
     
     def generate_report(self) -> str:
-        """Generate a human-readable report."""
+        """Generate a human-readable report with version information."""
         if not self.detected_technologies:
             return "No technologies detected."
         
@@ -2634,7 +3110,10 @@ class TechnologyStackFingerprinter:
             if technologies:
                 report += f"{category.replace('_', ' ').title()}:\n"
                 for tech in technologies:
-                    report += f"  - {tech}\n"
+                    if tech in self.detected_versions:
+                        report += f"  - {tech} (Version: {self.detected_versions[tech]})\n"
+                    else:
+                        report += f"  - {tech}\n"
                 report += "\n"
         
         return report
@@ -3684,6 +4163,14 @@ class PassiveOSINT:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
+        
+        # Initialize Censys client if library is available and credentials provided
+        self.censys_client = None
+        if v2 and self.censys_api_id and self.censys_api_secret:
+            try:
+                self.censys_client = v2.CensysHosts(api_id=self.censys_api_id, api_secret=self.censys_api_secret)
+            except Exception:
+                self.censys_client = None
     
     def query_shodan(self, target: str) -> Dict:
         """Query Shodan for host information."""
@@ -3701,18 +4188,15 @@ class PassiveOSINT:
             return {'error': str(e)}
     
     def query_censys(self, target: str) -> Dict:
-        """Query Censys for host information."""
-        if not self.censys_api_id or not self.censys_api_secret:
-            return {'error': 'Censys API credentials not configured'}
+        """Query Censys for host information using censys library."""
+        if not self.censys_client:
+            if not self.censys_api_id or not self.censys_api_secret:
+                return {'error': 'Censys API credentials not configured'}
+            return {'error': 'Censys library not available or client initialization failed'}
         
         try:
-            response = self.session.get(
-                f"https://search.censys.io/api/v2/hosts/{target}",
-                auth=(self.censys_api_id, self.censys_api_secret),
-                timeout=10
-            )
-            response.raise_for_status()
-            return response.json()
+            result = self.censys_client.view_host(target)
+            return result
         except Exception as e:
             return {'error': str(e)}
     
