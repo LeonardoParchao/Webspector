@@ -599,6 +599,65 @@ class Crawler(CancellableOperation):
                 return max(delay, self.rate_limit_delay)
         return self.rate_limit_delay
     
+    def _parse_robots_txt_for_urls(self, url: str) -> Set[str]:
+        """Parse robots.txt to extract URLs when respect_robots is False."""
+        urls = set()
+        domain = self._get_domain(url)
+        if not domain:
+            return urls
+        
+        robots_url = f"{urlparse(url).scheme}://{domain}/robots.txt"
+        
+        try:
+            response = self.session.get(robots_url, timeout=10)
+            if response.status_code == 200:
+                content = response.text
+                # Extract Sitemap directives
+                for line in content.split('\n'):
+                    line = line.strip()
+                    if line.lower().startswith('sitemap:'):
+                        sitemap_url = line.split(':', 1)[1].strip()
+                        urls.add(sitemap_url)
+        except Exception as e:
+            pass  # Silently fail if robots.txt is unavailable
+        
+        return urls
+    
+    def _parse_sitemap_xml(self, sitemap_url: str) -> Set[str]:
+        """Parse sitemap.xml to extract URLs."""
+        urls = set()
+        
+        try:
+            response = self.session.get(sitemap_url, timeout=10)
+            if response.status_code == 200:
+                # Try to parse as XML
+                try:
+                    import xml.etree.ElementTree as ET
+                    root = ET.fromstring(response.text)
+                    
+                    # Handle sitemap index (references to other sitemaps)
+                    for loc in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc'):
+                        child_sitemap_url = loc.text
+                        if child_sitemap_url:
+                            # Recursively parse child sitemaps
+                            urls.update(self._parse_sitemap_xml(child_sitemap_url))
+                    
+                    # Handle regular sitemap with URLs
+                    for loc in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}url/{http://www.sitemaps.org/schemas/sitemap/0.9}loc'):
+                        url = loc.text
+                        if url:
+                            urls.add(url)
+                except Exception as xml_error:
+                    # Fallback to regex parsing if XML parsing fails
+                    import re
+                    url_pattern = r'<loc>(.*?)</loc>'
+                    matches = re.findall(url_pattern, response.text)
+                    urls.update(matches)
+        except Exception as e:
+            pass  # Silently fail if sitemap is unavailable
+        
+        return urls
+    
     def _apply_rate_limit(self, url: str):
         """Apply rate limiting with exponential backoff and jitter."""
         if not self.polite_crawling:
