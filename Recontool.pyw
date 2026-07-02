@@ -2865,10 +2865,14 @@ class TemporalAnalyzer:
             tofile='current'
         )
         
+        diff_lines = list(diff)
+        added_count = sum(1 for line in diff_lines if line.startswith('+') and not line.startswith('+++'))
+        removed_count = sum(1 for line in diff_lines if line.startswith('-') and not line.startswith('---'))
+        
         return {
-            'added_lines': 0,
-            'removed_lines': 0,
-            'diff': ''.join(diff)
+            'added_lines': added_count,
+            'removed_lines': removed_count,
+            'diff': ''.join(diff_lines)
         }
     
     def _check_patterns(self, content: str, patterns: List[str]) -> List[Dict]:
