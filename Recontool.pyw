@@ -6141,13 +6141,40 @@ class GUI(QMainWindow):
             return
         
         try:
-            # Add some sample data
-            for i in range(10):
-                self.dashboard.add_data_point(
-                    response_time=0.3 + (i * 0.1),
-                    status_code=200,
-                    pages_crawled=(i + 1) * 5
-                )
+            # Clear previous dashboard data
+            self.dashboard.data_history = {
+                'timestamps': [],
+                'response_times': [],
+                'status_codes': [],
+                'pages_crawled': []
+            }
+            
+            # Get real crawl results if available
+            if self.crawler is not None:
+                crawl_results = self.crawler.get_results()
+                
+                if crawl_results:
+                    # Add real data from crawl results
+                    pages_crawled = 0
+                    for result in crawl_results:
+                        response_time = result.get('response_time', 0)
+                        status_code = result.get('status_code', 0)
+                        
+                        # Only count successful pages
+                        if result.get('type') != 'error' and result.get('type') != 'duplicate':
+                            pages_crawled += 1
+                        
+                        self.dashboard.add_data_point(
+                            response_time=response_time,
+                            status_code=status_code,
+                            pages_crawled=pages_crawled
+                        )
+                else:
+                    QMessageBox.information(self, "Info", "No crawl results available. Perform a crawl first.")
+                    return
+            else:
+                QMessageBox.information(self, "Info", "No crawler initialized. Start a crawl first.")
+                return
             
             dashboard_html = self.dashboard.create_dashboard()
             
@@ -6156,7 +6183,7 @@ class GUI(QMainWindow):
             else:
                 self.dashboard_display.setText(dashboard_html)
             
-            self.status_label.setText("Dashboard refreshed")
+            self.status_label.setText("Dashboard refreshed with real data")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Dashboard refresh failed: {str(e)}")
     
