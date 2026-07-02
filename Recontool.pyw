@@ -448,7 +448,7 @@ class Crawler(CancellableOperation):
         self.robots_cache: Dict[str, RobotFileParser] = {}
         
         # Content fingerprinting
-        self.content_hashes: Dict[str, str] = {}
+        self.content_hashes: Dict[str, Simhash] = {}
         self.near_duplicate_threshold = 0.85
         
         # Authentication
@@ -644,17 +644,35 @@ class Crawler(CancellableOperation):
             return hashlib.sha256(content.encode()).hexdigest()
         return hashlib.sha256(content.encode()).hexdigest()
     
+    def _compute_simhash(self, content: str) -> Optional[Simhash]:
+        """Compute Simhash for content using word shingling."""
+        if Simhash is None:
+            return None
+        
+        # Tokenize content into words and create shingles (3-word sequences)
+        words = re.findall(r'\w+', content.lower())
+        shingles = [' '.join(words[i:i+3]) for i in range(len(words) - 2)]
+        
+        # Compute Simhash from shingles
+        return Simhash(shingles)
+    
     def _is_near_duplicate(self, content: str) -> bool:
         """Check if content is near-duplicate using simhash."""
         if Simhash is None:
             return False
         
-        content_hash = self._compute_hash(content)
+        content_simhash = self._compute_simhash(content)
+        if content_simhash is None:
+            return False
         
-        for existing_hash in self.content_hashes.values():
-            # Simple hash comparison for now
-            # For proper simhash, we'd need to implement shingling
-            if content_hash == existing_hash:
+        for existing_simhash in self.content_hashes.values():
+            # Compute Hamming distance between Simhash values
+            distance = content_simhash.distance(existing_simhash)
+            # Convert distance to similarity (lower distance = higher similarity)
+            # Simhash uses 64-bit hashes, so max distance is 64
+            similarity = 1 - (distance / 64)
+            
+            if similarity >= self.near_duplicate_threshold:
                 return True
         
         return False
@@ -884,8 +902,9 @@ class Crawler(CancellableOperation):
             page_text = self.extract_text(soup)
             
             # Content fingerprinting
-            content_hash = self._compute_hash(page_text)
-            self.content_hashes[url] = content_hash
+            content_simhash = self._compute_simhash(page_text)
+            if content_simhash is not None:
+                self.content_hashes[url] = content_simhash
             
             if self._is_near_duplicate(page_text):
                 return {
@@ -1127,8 +1146,9 @@ class Crawler(CancellableOperation):
                     page_text = self.extract_text(soup)
                     
                     # Content fingerprinting
-                    content_hash = self._compute_hash(page_text)
-                    self.content_hashes[current_url] = content_hash
+                    content_simhash = self._compute_simhash(page_text)
+                    if content_simhash is not None:
+                        self.content_hashes[current_url] = content_simhash
                     
                     if self._is_near_duplicate(page_text):
                         result = {
@@ -3749,11 +3769,18 @@ class KnowledgeGraphLinker:
     WIKIDATA_API = "https://www.wikidata.org/w/api.php"
     DBPEDIA_SPARQL = "https://dbpedia.org/sparql"
     
-    def __init__(self):
+    def __init__(self, use_ner: bool = True):
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
+        self.ner = None
+        if use_ner:
+            try:
+                self.ner = NamedEntityRecognizer()
+            except (ImportError, OSError):
+                # spaCy not available or model not installed, will use fallback
+                pass
     
     def search_wikidata(self, query: str) -> List[Dict]:
         """Search Wikidata for entities."""
@@ -3828,14 +3855,34 @@ class KnowledgeGraphLinker:
         return results
     
     def link_entities(self, text: str) -> Dict:
-        """Link entities in text to knowledge graphs."""
-        # Simple entity extraction (would use NER in production)
-        words = text.split()
-        entities = [word for word in words if word[0].isupper() and len(word) > 3]
+        """Link entities in text to knowledge graphs using proper NER."""
+        entities = []
+        
+        # Use NamedEntityRecognizer if available
+        if self.ner is not None:
+            ner_results = self.ner.extract_entities(text)
+            if 'error' not in ner_results:
+                # Extract entity texts from relevant categories
+                for label in ['PERSON', 'ORG', 'GPE', 'LOC']:
+                    if label in ner_results:
+                        for ent in ner_results[label]:
+                            entities.append(ent['text'])
+        else:
+            # Fallback: simple entity extraction (capitalized words > 3 chars)
+            words = text.split()
+            entities = [word for word in words if word[0].isupper() and len(word) > 3]
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_entities = []
+        for entity in entities:
+            if entity not in seen:
+                seen.add(entity)
+                unique_entities.append(entity)
         
         results = {}
         
-        for entity in entities[:5]:  # Limit to top 5 entities
+        for entity in unique_entities[:5]:  # Limit to top 5 entities
             results[entity] = {
                 'wikidata': self.search_wikidata(entity),
                 'dbpedia': self.query_dbpedia(entity)
