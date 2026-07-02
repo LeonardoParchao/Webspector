@@ -1109,6 +1109,8 @@ class Crawler(CancellableOperation):
         queue = deque([(self.url, 0)])
         
         while queue:
+            if self.is_cancelled():
+                break
             current_url, current_depth = queue.popleft()
             
             if current_depth > self.depth or current_url in self.visited_urls:
