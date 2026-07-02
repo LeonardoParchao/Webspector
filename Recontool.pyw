@@ -5714,6 +5714,10 @@ class GUI(QMainWindow):
     def update_tor_status(self, message):
         self.status_label.setText(message)
     
+    def update_tor_progress(self, value):
+        self.tor_progress.setRange(0, 100)
+        self.tor_progress.setValue(value)
+    
     def display_tor_results(self, results):
         self.current_results = results
         self.tor_progress.setVisible(False)
@@ -5784,18 +5788,24 @@ class GUI(QMainWindow):
         self.port_scanner.timeout = timeout
         
         self.scan_progress.setVisible(True)
-        self.scan_progress.setRange(0, 0)
+        self.scan_progress.setRange(0, 100)
+        self.scan_progress.setValue(0)
         self.scan_results_table.setRowCount(0)
         
         # Run in thread
         self.scan_thread = PortScanWorker(self.port_scanner, host, ports, use_async)
         self.scan_thread.progress.connect(self.update_scan_status)
+        self.scan_thread.progress_int.connect(self.update_scan_progress)
         self.scan_thread.finished.connect(self.display_scan_results)
         self.scan_thread.error.connect(self.handle_scan_error)
         self.scan_thread.start()
     
     def update_scan_status(self, message):
         self.status_label.setText(message)
+    
+    def update_scan_progress(self, value):
+        self.scan_progress.setRange(0, 100)
+        self.scan_progress.setValue(value)
     
     def display_scan_results(self, results):
         self.current_results = results
@@ -6739,6 +6749,7 @@ class TorWorker(QThread):
 
 class PortScanWorker(QThread):
     progress = pyqtSignal(str)
+    progress_int = pyqtSignal(int)
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
     
@@ -6752,17 +6763,25 @@ class PortScanWorker(QThread):
     def run(self):
         try:
             self.progress.emit(f"Scanning ports on: {self.host}")
+            self.progress_int.emit(5)
             
             def progress_callback(current, total, open_count):
                 self.progress.emit(f"Progress: {current}/{total}, Open ports: {open_count}")
+                if total > 0:
+                    progress = int((current / total) * 95)
+                else:
+                    progress = min(95, current)
+                self.progress_int.emit(progress)
             
             if self.use_async:
+                self.progress_int.emit(50)
                 results = self.scanner.async_scan_ports(self.host, self.ports)
             else:
                 results = self.scanner.scan_ports(self.host, self.ports, progress_callback)
             
             open_ports = len([r for r in results if r['status'] == 'open'])
             self.progress.emit(f"Scan complete. {open_ports} open ports found")
+            self.progress_int.emit(100)
             self.finished.emit(results)
         except Exception as e:
             self.error.emit(str(e))
