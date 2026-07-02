@@ -819,7 +819,7 @@ class Crawler(CancellableOperation):
         path = parsed.path.lower()
         return any(path.endswith(ext.lower()) for ext in extensions)
     
-    async def _fetch_page_async(self, session: aiohttp.ClientSession, url: str) -> Optional[str]:
+    async def _fetch_page_async(self, session: aiohttp.ClientSession, url: str) -> Optional[Dict]:
         """Fetch a single page asynchronously."""
         await self._async_apply_rate_limit(url)
         
@@ -827,9 +827,19 @@ class Crawler(CancellableOperation):
             return None
         
         try:
+            start_time = time.time()
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
-                response.raise_for_status()
-                return await response.text()
+                response_time = time.time() - start_time
+                status_code = response.status
+                content = await response.text()
+                page_size = len(content.encode('utf-8'))
+                
+                return {
+                    'content': content,
+                    'response_time': response_time,
+                    'status_code': status_code,
+                    'page_size': page_size
+                }
         except Exception as e:
             print(f"Error fetching {url}: {e}")
             return None
@@ -845,15 +855,23 @@ class Crawler(CancellableOperation):
             
             self.visited_urls.add(url)
             
-            html_content = await self._fetch_page_async(session, url)
+            fetch_result = await self._fetch_page_async(session, url)
             
-            if html_content is None:
+            if fetch_result is None:
                 return {
                     'url': url,
                     'depth': depth,
                     'type': 'error',
-                    'error': 'Failed to fetch or blocked by robots.txt'
+                    'error': 'Failed to fetch or blocked by robots.txt',
+                    'response_time': 0,
+                    'status_code': 0,
+                    'page_size': 0
                 }
+            
+            html_content = fetch_result['content']
+            response_time = fetch_result['response_time']
+            status_code = fetch_result['status_code']
+            page_size = fetch_result['page_size']
             
             # Use JavaScript rendering if enabled
             if self.use_js_rendering:
@@ -882,6 +900,9 @@ class Crawler(CancellableOperation):
             name_match = self.search_in_content(url, search_names, use_regex)
             ext_match = self.filter_by_extension(url, file_extensions or [])
             
+            # Extract links for graph building
+            links = self.extract_links_advanced(html_content, url) if html_content else []
+            
             result = None
             if text_match or name_match:
                 result = {
@@ -891,7 +912,24 @@ class Crawler(CancellableOperation):
                     'content_preview': page_text[:500] if page_text else '',
                     'matched_text': search_text if text_match else None,
                     'matched_name': search_names if name_match else None,
-                    'content_hash': content_hash
+                    'content_hash': content_hash,
+                    'links': links,
+                    'response_time': response_time,
+                    'status_code': status_code,
+                    'page_size': page_size
+                }
+            else:
+                # Store links even if page doesn't match search criteria
+                result = {
+                    'url': url,
+                    'depth': depth,
+                    'type': 'page',
+                    'content_preview': page_text[:500] if page_text else '',
+                    'content_hash': content_hash,
+                    'links': links,
+                    'response_time': response_time,
+                    'status_code': status_code,
+                    'page_size': page_size
                 }
             
             return result
@@ -971,8 +1009,9 @@ class Crawler(CancellableOperation):
                         
                         # Extract links for further crawling
                         if result.get('depth') < self.depth:
-                            html_content = await self._fetch_page_async(session, result['url'])
-                            if html_content:
+                            fetch_result = await self._fetch_page_async(session, result['url'])
+                            if fetch_result:
+                                html_content = fetch_result['content']
                                 links = self.extract_links_advanced(html_content, result['url'])
                                 for link in links:
                                     if link not in self.visited_urls:
@@ -1073,7 +1112,12 @@ class Crawler(CancellableOperation):
             self.visited_urls.add(current_url)
             
             try:
+                start_time = time.time()
                 response = self.session.get(current_url, timeout=10)
+                response_time = time.time() - start_time
+                status_code = response.status_code
+                page_size = len(response.content)
+                
                 response.raise_for_status()
                 
                 content_type = response.headers.get('content-type', '')
@@ -1101,6 +1145,9 @@ class Crawler(CancellableOperation):
                     name_match = self.search_in_content(current_url, search_names, use_regex)
                     ext_match = self.filter_by_extension(current_url, file_extensions or [])
                     
+                    # Extract links for graph building
+                    links = self.extract_links_advanced(response.text, current_url)
+                    
                     if text_match or name_match:
                         result = {
                             'url': current_url,
@@ -1109,13 +1156,30 @@ class Crawler(CancellableOperation):
                             'content_preview': page_text[:500] if page_text else '',
                             'matched_text': search_text if text_match else None,
                             'matched_name': search_names if name_match else None,
-                            'content_hash': content_hash
+                            'content_hash': content_hash,
+                            'links': links,
+                            'response_time': response_time,
+                            'status_code': status_code,
+                            'page_size': page_size
+                        }
+                        self.results.append(result)
+                    else:
+                        # Store links even if page doesn't match search criteria
+                        result = {
+                            'url': current_url,
+                            'depth': current_depth,
+                            'type': 'page',
+                            'content_preview': page_text[:500] if page_text else '',
+                            'content_hash': content_hash,
+                            'links': links,
+                            'response_time': response_time,
+                            'status_code': status_code,
+                            'page_size': page_size
                         }
                         self.results.append(result)
                     
                     # Extract links for further crawling
                     if current_depth < self.depth:
-                        links = self.extract_links_advanced(response.text, current_url)
                         for link in links:
                             if link not in self.visited_urls:
                                 queue.append((link, current_depth + 1))
@@ -1132,7 +1196,10 @@ class Crawler(CancellableOperation):
                             'type': 'file',
                             'content_type': content_type,
                             'matched_name': search_names if name_match else None,
-                            'matched_extension': file_extensions if ext_match else None
+                            'matched_extension': file_extensions if ext_match else None,
+                            'response_time': response_time,
+                            'status_code': status_code,
+                            'page_size': page_size
                         }
                         self.results.append(result)
                 
@@ -1144,7 +1211,10 @@ class Crawler(CancellableOperation):
                     'url': current_url,
                     'depth': current_depth,
                     'type': 'error',
-                    'error': str(e)
+                    'error': str(e),
+                    'response_time': response_time if 'response_time' in locals() else 0,
+                    'status_code': status_code if 'status_code' in locals() else 0,
+                    'page_size': page_size if 'page_size' in locals() else 0
                 }
                 self.results.append(result)
         
@@ -1844,7 +1914,7 @@ class SubdomainDiscovery:
         subdomains = set()
         
         try:
-            url = f"https://crt.sh/?q=%.{domain}&output=json"
+            url = f"https://crt.sh/?q=%.{domain}&exclude=expired&output=json"
             response = requests.get(url, timeout=10)
             response.raise_for_status()
             
@@ -2112,14 +2182,7 @@ class NetworkGraphGenerator:
         for result in crawl_results:
             url = result.get('url')
             if url and result.get('type') == 'page':
-                url_to_links[url] = []
-        
-        # Extract links from results (would need to be stored during crawl)
-        for result in crawl_results:
-            url = result.get('url')
-            if url and url in url_to_links:
-                # In a real implementation, you'd extract links from the page
-                pass
+                url_to_links[url] = result.get('links', [])
         
         # Build edges
         for source, targets in url_to_links.items():
@@ -6005,15 +6068,15 @@ class GUI(QMainWindow):
             return
         
         try:
-            # Simulate metrics from crawl results
+            # Extract real metrics from crawl results
             for result in self.current_results:
                 self.statistical_analyzer.record_metric(
                     url=result.get('url', ''),
-                    response_time=0.5,  # Placeholder
-                    status_code=200,
-                    content_type='text/html',
-                    page_size=len(result.get('content_preview', '')),
-                    outbound_links=[]
+                    response_time=result.get('response_time', 0),
+                    status_code=result.get('status_code', 0),
+                    content_type=result.get('content_type', 'text/html'),
+                    page_size=result.get('page_size', 0),
+                    outbound_links=result.get('links', [])
                 )
             
             report = self.statistical_analyzer.generate_report()
