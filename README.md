@@ -409,13 +409,6 @@ This tool is intended for **educational and authorized testing purposes only**. 
 
 ---
 
-## Contact
-
-- **Developer:** Lparc
-- **Project Repository:** [GitHub URL]
-
----
-
 ## Version History
 
 - **v2.0** - Complete rewrite with PyQt5 GUI
