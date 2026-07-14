@@ -21,10 +21,12 @@ import warnings
 import logging
 import os
 import secrets
+import random
+from functools import wraps
+import math
 
 # Suppress BeautifulSoup XML parsing warning
 warnings.filterwarnings('ignore', message='.*parsing an XML document using an HTML parser.*')
-import random
 from datetime import datetime
 import socket
 import dns.resolver
@@ -1789,29 +1791,306 @@ class Crawler(CancellableOperation):
         self.visited_urls.clear()
         self.results.clear()
 
+# User-Agent rotation pool
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/91.0.864.59',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0'
+]
+
+def retry_with_exponential_backoff(max_retries: int = 3, initial_delay: float = 1.0, 
+                                   backoff_factor: float = 2.0, exceptions: tuple = (Exception,)):
+    """
+    Decorator for retrying function calls with exponential backoff.
+    
+    Args:
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds
+        backoff_factor: Multiplier for delay after each retry
+        exceptions: Tuple of exceptions to catch and retry on
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            delay = initial_delay
+            last_exception = None
+            
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    last_exception = e
+                    if attempt == max_retries:
+                        logger.error(f"Max retries ({max_retries}) exceeded for {func.__name__}: {e}")
+                        raise
+                    
+                    logger.warning(f"Attempt {attempt + 1} failed for {func.__name__}: {e}. Retrying in {delay:.2f}s...")
+                    time.sleep(delay)
+                    delay *= backoff_factor
+            
+            raise last_exception
+        return wrapper
+    return decorator
+
+def detect_captcha(response_text: str) -> bool:
+    """
+    Detect if response contains CAPTCHA challenge.
+    
+    Args:
+        response_text: HTML response text
+        
+    Returns:
+        True if CAPTCHA detected, False otherwise
+    """
+    captcha_indicators = [
+        'captcha', 'CAPTCHA', 'unusual traffic', 'verify you are human',
+        'security check', 'human verification', 'are you a robot',
+        'recaptcha', 'reCAPTCHA', 'challenge platform'
+    ]
+    
+    response_lower = response_text.lower()
+    return any(indicator.lower() in response_lower for indicator in captcha_indicators)
+
+class CaptchaSolver:
+    """
+    CAPTCHA solver using 2Captcha service.
+    
+    Requires 2Captcha API key.
+    """
+    
+    def __init__(self, api_key: str):
+        """
+        Initialize CAPTCHA solver.
+        
+        Args:
+            api_key: 2Captcha API key
+        """
+        self.api_key = api_key
+        self.base_url = 'http://2captcha.com'
+    
+    def solve_recaptcha_v2(self, site_key: str, page_url: str, timeout: int = 120) -> Optional[str]:
+        """
+        Solve reCAPTCHA v2 using 2Captcha.
+        
+        Args:
+            site_key: The site key for reCAPTCHA
+            page_url: The URL of the page with CAPTCHA
+            timeout: Maximum time to wait for solution (seconds)
+            
+        Returns:
+            Solution token if successful, None otherwise
+        """
+        try:
+            # Submit CAPTCHA
+            submit_url = f'{self.base_url}/in.php'
+            params = {
+                'key': self.api_key,
+                'method': 'userrecaptcha',
+                'googlekey': site_key,
+                'pageurl': page_url,
+                'json': 1
+            }
+            
+            response = requests.post(submit_url, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            
+            if data['status'] != 1:
+                logger.error(f"CAPTCHA submission failed: {data.get('request', 'Unknown error')}")
+                return None
+            
+            captcha_id = data['request']
+            logger.info(f"CAPTCHA submitted with ID: {captcha_id}")
+            
+            # Poll for solution
+            result_url = f'{self.base_url}/res.php'
+            start_time = time.time()
+            
+            while time.time() - start_time < timeout:
+                params = {
+                    'key': self.api_key,
+                    'action': 'get',
+                    'id': captcha_id,
+                    'json': 1
+                }
+                
+                response = requests.get(result_url, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+                
+                if data['status'] == 1:
+                    logger.info("CAPTCHA solved successfully")
+                    return data['request']
+                elif data['request'] == 'CAPCHA_NOT_READY':
+                    time.sleep(5)
+                else:
+                    logger.error(f"CAPTCHA solving failed: {data.get('request', 'Unknown error')}")
+                    return None
+            
+            logger.error("CAPTCHA solving timed out")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error solving CAPTCHA: {e}")
+            return None
+    
+    def solve_image_captcha(self, image_data: bytes, timeout: int = 120) -> Optional[str]:
+        """
+        Solve image CAPTCHA using 2Captcha.
+        
+        Args:
+            image_data: Raw image data (bytes)
+            timeout: Maximum time to wait for solution (seconds)
+            
+        Returns:
+            Solution text if successful, None otherwise
+        """
+        try:
+            # Submit CAPTCHA
+            submit_url = f'{self.base_url}/in.php'
+            files = {'file': ('captcha.jpg', image_data, 'image/jpeg')}
+            params = {
+                'key': self.api_key,
+                'method': 'post',
+                'json': 1
+            }
+            
+            response = requests.post(submit_url, files=files, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            
+            if data['status'] != 1:
+                logger.error(f"CAPTCHA submission failed: {data.get('request', 'Unknown error')}")
+                return None
+            
+            captcha_id = data['request']
+            logger.info(f"Image CAPTCHA submitted with ID: {captcha_id}")
+            
+            # Poll for solution
+            result_url = f'{self.base_url}/res.php'
+            start_time = time.time()
+            
+            while time.time() - start_time < timeout:
+                params = {
+                    'key': self.api_key,
+                    'action': 'get',
+                    'id': captcha_id,
+                    'json': 1
+                }
+                
+                response = requests.get(result_url, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+                
+                if data['status'] == 1:
+                    logger.info("Image CAPTCHA solved successfully")
+                    return data['request']
+                elif data['request'] == 'CAPCHA_NOT_READY':
+                    time.sleep(5)
+                else:
+                    logger.error(f"CAPTCHA solving failed: {data.get('request', 'Unknown error')}")
+                    return None
+            
+            logger.error("CAPTCHA solving timed out")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error solving image CAPTCHA: {e}")
+            return None
+
 class Searcher:
-    def __init__(self):
+    def __init__(self, use_rotation: bool = True, proxies: Optional[List[str]] = None,
+                 captcha_solver_api_key: Optional[str] = None,
+                 google_api_key: Optional[str] = None,
+                 google_cx_id: Optional[str] = None,
+                 bing_api_key: Optional[str] = None):
+        """
+        Initialize Searcher with advanced features.
+        
+        Args:
+            use_rotation: Enable user-agent rotation
+            proxies: List of proxy URLs (format: 'http://user:pass@host:port')
+            captcha_solver_api_key: API key for CAPTCHA solving service (e.g., 2Captcha)
+            google_api_key: Google Custom Search API key
+            google_cx_id: Google Custom Search Engine ID
+            bing_api_key: Bing Web Search API key
+        """
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        })
+        self.use_rotation = use_rotation
+        self.proxies = proxies or []
+        self.current_proxy_index = 0
+        self.captcha_solver_api_key = captcha_solver_api_key
+        self.google_api_key = google_api_key
+        self.google_cx_id = google_cx_id
+        self.bing_api_key = bing_api_key
         self.results: List[Dict] = []
         self.search_engines = {
             'google': 'https://www.google.com/search',
             'bing': 'https://www.bing.com/search',
             'duckduckgo': 'https://duckduckgo.com/html/'
         }
+        self._rotate_user_agent()
+        
+    def _rotate_user_agent(self):
+        """Rotate to a random user-agent."""
+        if self.use_rotation:
+            user_agent = random.choice(USER_AGENTS)
+            self.session.headers.update({'User-Agent': user_agent})
     
+    def _get_proxy(self) -> Optional[Dict[str, str]]:
+        """Get next proxy from rotation."""
+        if not self.proxies:
+            return None
+        proxy = self.proxies[self.current_proxy_index]
+        self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxies)
+        return {'http': proxy, 'https': proxy}
+    
+    def _handle_captcha(self, response_text: str) -> bool:
+        """
+        Handle CAPTCHA detection.
+        
+        Args:
+            response_text: Response text to check for CAPTCHA
+            
+        Returns:
+            True if CAPTCHA was handled, False otherwise
+        """
+        if detect_captcha(response_text):
+            logger.warning("CAPTCHA detected in response")
+            if self.captcha_solver_api_key:
+                logger.info("CAPTCHA solver API key configured - would attempt solving")
+                # TODO: Implement 2Captcha integration
+                # For now, return False to indicate not handled
+                return False
+            else:
+                logger.warning("No CAPTCHA solver configured - pausing recommended")
+                return False
+        return True
+    
+    @retry_with_exponential_backoff(max_retries=3, initial_delay=1.0, backoff_factor=2.0, 
+                                   exceptions=(requests.RequestException, requests.Timeout))
     def search_google(self, query: str, num_results: int = 10, site: Optional[str] = None) -> List[Dict]:
-        """Search using Google."""
+        """Search using Google with retry logic and CAPTCHA detection."""
+        self._rotate_user_agent()
         search_url = self.search_engines['google']
         params = {'q': query, 'num': num_results}
         if site:
             params['q'] = f"site:{site} {query}"
         
+        proxy = self._get_proxy()
+        
         try:
-            response = self.session.get(search_url, params=params, timeout=10)
+            response = self.session.get(search_url, params=params, timeout=10, proxies=proxy)
             response.raise_for_status()
+            
+            # Check for CAPTCHA
+            if not self._handle_captcha(response.text):
+                return [{'error': 'CAPTCHA detected - could not handle', 'engine': 'google'}]
             
             soup = BeautifulSoup(response.text, 'html.parser')
             results = []
@@ -1835,16 +2114,25 @@ class Searcher:
         except requests.RequestException as e:
             return [{'error': str(e), 'engine': 'google'}]
     
+    @retry_with_exponential_backoff(max_retries=3, initial_delay=1.0, backoff_factor=2.0,
+                                   exceptions=(requests.RequestException, requests.Timeout))
     def search_bing(self, query: str, num_results: int = 10, site: Optional[str] = None) -> List[Dict]:
-        """Search using Bing."""
+        """Search using Bing with retry logic and CAPTCHA detection."""
+        self._rotate_user_agent()
         search_url = self.search_engines['bing']
         params = {'q': query, 'count': num_results}
         if site:
             params['q'] = f"site:{site} {query}"
         
+        proxy = self._get_proxy()
+        
         try:
-            response = self.session.get(search_url, params=params, timeout=10)
+            response = self.session.get(search_url, params=params, timeout=10, proxies=proxy)
             response.raise_for_status()
+            
+            # Check for CAPTCHA
+            if not self._handle_captcha(response.text):
+                return [{'error': 'CAPTCHA detected - could not handle', 'engine': 'bing'}]
             
             soup = BeautifulSoup(response.text, 'html.parser')
             results = []
@@ -1868,16 +2156,25 @@ class Searcher:
         except requests.RequestException as e:
             return [{'error': str(e), 'engine': 'bing'}]
     
+    @retry_with_exponential_backoff(max_retries=3, initial_delay=1.0, backoff_factor=2.0,
+                                   exceptions=(requests.RequestException, requests.Timeout))
     def search_duckduckgo(self, query: str, num_results: int = 10, site: Optional[str] = None) -> List[Dict]:
-        """Search using DuckDuckGo."""
+        """Search using DuckDuckGo with retry logic and CAPTCHA detection."""
+        self._rotate_user_agent()
         search_url = self.search_engines['duckduckgo']
         params = {'q': query}
         if site:
             params['q'] = f"site:{site} {query}"
         
+        proxy = self._get_proxy()
+        
         try:
-            response = self.session.get(search_url, params=params, timeout=10)
+            response = self.session.get(search_url, params=params, timeout=10, proxies=proxy)
             response.raise_for_status()
+            
+            # Check for CAPTCHA
+            if not self._handle_captcha(response.text):
+                return [{'error': 'CAPTCHA detected - could not handle', 'engine': 'duckduckgo'}]
             
             soup = BeautifulSoup(response.text, 'html.parser')
             results = []
@@ -1899,6 +2196,105 @@ class Searcher:
             
         except requests.RequestException as e:
             return [{'error': str(e), 'engine': 'duckduckgo'}]
+    
+    def search_google_api(self, query: str, num_results: int = 10, site: Optional[str] = None) -> List[Dict]:
+        """
+        Search using Google Custom Search API (primary method if API key available).
+        
+        Args:
+            query: Search query string
+            num_results: Number of results to return
+            site: Restrict search to specific domain
+            
+        Returns:
+            List of dictionaries containing search results
+        """
+        if not self.google_api_key or not self.google_cx_id:
+            logger.warning("Google API credentials not configured, falling back to scraping")
+            return self.search_google(query, num_results, site)
+        
+        url = 'https://www.googleapis.com/customsearch/v1'
+        params = {
+            'key': self.google_api_key,
+            'cx': self.google_cx_id,
+            'q': query,
+            'num': min(num_results, 10)  # API max is 10 per request
+        }
+        
+        if site:
+            params['q'] = f"site:{site} {query}"
+        
+        try:
+            response = self.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            results = []
+            
+            if 'items' in data:
+                for item in data['items']:
+                    result = {
+                        'title': item.get('title', ''),
+                        'url': item.get('link', ''),
+                        'snippet': item.get('snippet', ''),
+                        'engine': 'google_api'
+                    }
+                    results.append(result)
+            
+            return results[:num_results]
+            
+        except requests.RequestException as e:
+            logger.error(f"Google API error: {e}, falling back to scraping")
+            return self.search_google(query, num_results, site)
+    
+    def search_bing_api(self, query: str, num_results: int = 10, site: Optional[str] = None) -> List[Dict]:
+        """
+        Search using Bing Web Search API (primary method if API key available).
+        
+        Args:
+            query: Search query string
+            num_results: Number of results to return
+            site: Restrict search to specific domain
+            
+        Returns:
+            List of dictionaries containing search results
+        """
+        if not self.bing_api_key:
+            logger.warning("Bing API key not configured, falling back to scraping")
+            return self.search_bing(query, num_results, site)
+        
+        url = 'https://api.bing.microsoft.com/v7.0/search'
+        headers = {'Ocp-Apim-Subscription-Key': self.bing_api_key}
+        params = {
+            'q': query,
+            'count': min(num_results, 50)  # API max is 50
+        }
+        
+        if site:
+            params['q'] = f"site:{site} {query}"
+        
+        try:
+            response = self.session.get(url, params=params, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            results = []
+            
+            if 'webPages' in data and 'value' in data['webPages']:
+                for item in data['webPages']['value']:
+                    result = {
+                        'title': item.get('name', ''),
+                        'url': item.get('url', ''),
+                        'snippet': item.get('snippet', ''),
+                        'engine': 'bing_api'
+                    }
+                    results.append(result)
+            
+            return results[:num_results]
+            
+        except requests.RequestException as e:
+            logger.error(f"Bing API error: {e}, falling back to scraping")
+            return self.search_bing(query, num_results, site)
     
     def search(self, 
                query: str, 
@@ -1928,9 +2324,17 @@ class Searcher:
             query = f"{query} filetype:{file_type}"
         
         if engine == 'google':
-            results = self.search_google(query, num_results, site)
+            # Prefer API if available
+            if self.google_api_key and self.google_cx_id:
+                results = self.search_google_api(query, num_results, site)
+            else:
+                results = self.search_google(query, num_results, site)
         elif engine == 'bing':
-            results = self.search_bing(query, num_results, site)
+            # Prefer API if available
+            if self.bing_api_key:
+                results = self.search_bing_api(query, num_results, site)
+            else:
+                results = self.search_bing(query, num_results, site)
         elif engine == 'duckduckgo':
             results = self.search_duckduckgo(query, num_results, site)
         else:
@@ -2200,6 +2604,14 @@ class SearchOperators:
     intitle: Optional[str] = None
     inurl: Optional[str] = None
     filetype: Optional[str] = None
+    before: Optional[str] = None
+    after: Optional[str] = None
+    cache: Optional[str] = None
+    link: Optional[str] = None
+    related: Optional[str] = None
+    boolean_and: Optional[List[str]] = None
+    boolean_or: Optional[List[str]] = None
+    boolean_not: Optional[List[str]] = None
     query: str = ""
 
 class SearchOperatorParser:
@@ -2207,12 +2619,13 @@ class SearchOperatorParser:
     
     OPERATORS = {
         'site:', 'intitle:', 'inurl:', 'filetype:', 'ext:', 'allintitle:', 
-        'allinurl:', 'intext:', 'allintext:', 'cache:', 'link:', 'related:'
+        'allinurl:', 'intext:', 'allintext:', 'cache:', 'link:', 'related:',
+        'before:', 'after:', 'AND', 'OR', 'NOT', '-'
     }
     
     def __init__(self):
         self.pattern = re.compile(
-            r'(?:site|intitle|inurl|filetype|ext|allint_title|allinurl|intext|allintext|cache|link|related):([^\s]+)',
+            r'(?:site|intitle|inurl|filetype|ext|allint_title|allinurl|intext|allintext|cache|link|related|before|after):([^\s]+)',
             re.IGNORECASE
         )
     
@@ -2220,6 +2633,9 @@ class SearchOperatorParser:
         """Parse search operators from query string."""
         operators = SearchOperators()
         operators.query = query
+        operators.boolean_and = []
+        operators.boolean_or = []
+        operators.boolean_not = []
         
         # Parse site:
         site_match = re.search(r'site:([^\s]+)', query, re.IGNORECASE)
@@ -2245,6 +2661,60 @@ class SearchOperatorParser:
             operators.filetype = filetype_match.group(1)
             operators.query = operators.query.replace(filetype_match.group(0), '').strip()
         
+        # Parse before: (date range)
+        before_match = re.search(r'before:(\d{4}-\d{2}-\d{2})', query, re.IGNORECASE)
+        if before_match:
+            operators.before = before_match.group(1)
+            operators.query = operators.query.replace(before_match.group(0), '').strip()
+        
+        # Parse after: (date range)
+        after_match = re.search(r'after:(\d{4}-\d{2}-\d{2})', query, re.IGNORECASE)
+        if after_match:
+            operators.after = after_match.group(1)
+            operators.query = operators.query.replace(after_match.group(0), '').strip()
+        
+        # Parse cache:
+        cache_match = re.search(r'cache:([^\s]+)', query, re.IGNORECASE)
+        if cache_match:
+            operators.cache = cache_match.group(1)
+            operators.query = operators.query.replace(cache_match.group(0), '').strip()
+        
+        # Parse link:
+        link_match = re.search(r'link:([^\s]+)', query, re.IGNORECASE)
+        if link_match:
+            operators.link = link_match.group(1)
+            operators.query = operators.query.replace(link_match.group(0), '').strip()
+        
+        # Parse related:
+        related_match = re.search(r'related:([^\s]+)', query, re.IGNORECASE)
+        if related_match:
+            operators.related = related_match.group(1)
+            operators.query = operators.query.replace(related_match.group(0), '').strip()
+        
+        # Parse Boolean operators
+        # AND operator (explicit)
+        and_matches = re.findall(r'\bAND\s+([^\s]+)', query, re.IGNORECASE)
+        operators.boolean_and.extend(and_matches)
+        operators.query = re.sub(r'\bAND\s+[^\s]+', '', operators.query, flags=re.IGNORECASE).strip()
+        
+        # OR operator
+        or_parts = re.findall(r'\(([^)]+)\)', query)
+        for part in or_parts:
+            if ' OR ' in part.upper():
+                or_terms = [t.strip() for t in re.split(r'\s+OR\s+', part, flags=re.IGNORECASE)]
+                operators.boolean_or.extend(or_terms)
+                operators.query = operators.query.replace(f'({part})', '').strip()
+        
+        # NOT operator (explicit)
+        not_matches = re.findall(r'\bNOT\s+([^\s]+)', query, re.IGNORECASE)
+        operators.boolean_not.extend(not_matches)
+        operators.query = re.sub(r'\bNOT\s+[^\s]+', '', operators.query, flags=re.IGNORECASE).strip()
+        
+        # Minus operator (exclude)
+        minus_matches = re.findall(r'-([^\s]+)', query)
+        operators.boolean_not.extend(minus_matches)
+        operators.query = re.sub(r'-[^\s]+', '', operators.query).strip()
+        
         return operators
     
     def build_query(self, operators: SearchOperators) -> str:
@@ -2259,6 +2729,29 @@ class SearchOperatorParser:
             parts.append(f"inurl:{operators.inurl}")
         if operators.filetype:
             parts.append(f"filetype:{operators.filetype}")
+        if operators.before:
+            parts.append(f"before:{operators.before}")
+        if operators.after:
+            parts.append(f"after:{operators.after}")
+        if operators.cache:
+            parts.append(f"cache:{operators.cache}")
+        if operators.link:
+            parts.append(f"link:{operators.link}")
+        if operators.related:
+            parts.append(f"related:{operators.related}")
+        
+        # Add Boolean operators
+        if operators.boolean_and:
+            for term in operators.boolean_and:
+                parts.append(f"AND {term}")
+        
+        if operators.boolean_or:
+            or_group = ' OR '.join(operators.boolean_or)
+            parts.append(f"({or_group})")
+        
+        if operators.boolean_not:
+            for term in operators.boolean_not:
+                parts.append(f"-{term}")
         
         if operators.query:
             parts.append(operators.query)
@@ -2283,8 +2776,133 @@ class QueryExpander:
         'test': ['demo', 'staging', 'dev', 'development', 'sandbox']
     }
     
+    SYNONYM_FILE = 'query_synonyms.json'
+    
     def __init__(self):
-        self.synonym_map = self.SYNONYM_MAP
+        self.synonym_map = self.SYNONYM_MAP.copy()
+        self._load_synonyms()
+    
+    def _load_synonyms(self):
+        """Load synonyms from file if it exists."""
+        if os.path.exists(self.SYNONYM_FILE):
+            try:
+                with open(self.SYNONYM_FILE, 'r', encoding='utf-8') as f:
+                    loaded_map = json.load(f)
+                # Merge with default map
+                self.synonym_map.update(loaded_map)
+                logger.info(f"Loaded synonyms from {self.SYNONYM_FILE}")
+            except Exception as e:
+                logger.error(f"Failed to load synonyms file: {e}")
+    
+    def _save_synonyms(self):
+        """Save current synonym map to file."""
+        try:
+            with open(self.SYNONYM_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.synonym_map, f, indent=2, ensure_ascii=False)
+            logger.info(f"Saved synonyms to {self.SYNONYM_FILE}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save synonyms file: {e}")
+            return False
+    
+    def add_synonym(self, word: str, synonyms: List[str]) -> bool:
+        """
+        Add or update synonyms for a word.
+        
+        Args:
+            word: The word to add synonyms for
+            synonyms: List of synonym strings
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        self.synonym_map[word.lower()] = [s.lower() for s in synonyms]
+        return self._save_synonyms()
+    
+    def remove_synonym(self, word: str) -> bool:
+        """
+        Remove a word from the synonym map.
+        
+        Args:
+            word: The word to remove
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if word.lower() in self.synonym_map:
+            del self.synonym_map[word.lower()]
+            return self._save_synonyms()
+        return False
+    
+    def import_synonyms(self, filepath: str) -> bool:
+        """
+        Import synonyms from a JSON file.
+        
+        Args:
+            filepath: Path to the JSON file containing synonyms
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                imported_map = json.load(f)
+            
+            # Validate structure
+            if not isinstance(imported_map, dict):
+                logger.error("Invalid synonyms file: must be a dictionary")
+                return False
+            
+            # Merge with existing map
+            for word, synonyms in imported_map.items():
+                if isinstance(synonyms, list):
+                    self.synonym_map[word.lower()] = [s.lower() for s in synonyms]
+            
+            self._save_synonyms()
+            logger.info(f"Imported synonyms from {filepath}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to import synonyms: {e}")
+            return False
+    
+    def export_synonyms(self, filepath: str) -> bool:
+        """
+        Export current synonym map to a JSON file.
+        
+        Args:
+            filepath: Path to save the JSON file
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(self.synonym_map, f, indent=2, ensure_ascii=False)
+            logger.info(f"Exported synonyms to {filepath}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to export synonyms: {e}")
+            return False
+    
+    def get_synonym_map(self) -> Dict[str, List[str]]:
+        """
+        Get the current synonym map.
+        
+        Returns:
+            Copy of the synonym map dictionary
+        """
+        return self.synonym_map.copy()
+    
+    def reset_synonyms(self) -> bool:
+        """
+        Reset synonym map to default values.
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        self.synonym_map = self.SYNONYM_MAP.copy()
+        return self._save_synonyms()
     
     def expand_synonyms(self, query: str, max_synonyms: int = 2) -> List[str]:
         """Expand query using synonyms."""
@@ -2332,12 +2950,98 @@ class QueryExpander:
         
         return list(set(expanded))
 
+class BM25Scorer:
+    """
+    BM25 relevance scorer for better document ranking.
+    
+    BM25 is a ranking function used by search engines to estimate the relevance
+    of documents to a given search query.
+    """
+    
+    def __init__(self, k1: float = 1.2, b: float = 0.75):
+        """
+        Initialize BM25 scorer.
+        
+        Args:
+            k1: Term saturation parameter (typically 1.2-2.0)
+            b: Length normalization parameter (typically 0.75)
+        """
+        self.k1 = k1
+        self.b = b
+    
+    def _tokenize(self, text: str) -> List[str]:
+        """Simple tokenization by splitting on whitespace and lowercasing."""
+        return [word.lower().strip('.,!?;:"()[]{}') for word in text.split()]
+    
+    def _calculate_idf(self, doc_freq: int, total_docs: int) -> float:
+        """
+        Calculate inverse document frequency (IDF).
+        
+        Args:
+            doc_freq: Number of documents containing the term
+            total_docs: Total number of documents
+            
+        Returns:
+            IDF score
+        """
+        if doc_freq == 0:
+            return 0
+        return math.log((total_docs - doc_freq + 0.5) / (doc_freq + 0.5) + 1)
+    
+    def score(self, query: str, document: str, doc_length: int, avg_doc_length: float,
+               term_doc_freqs: Dict[str, int], total_docs: int) -> float:
+        """
+        Calculate BM25 score for a document given a query.
+        
+        Args:
+            query: Search query string
+            document: Document text (title + snippet)
+            doc_length: Length of the document in tokens
+            avg_doc_length: Average document length across corpus
+            term_doc_freqs: Dictionary mapping terms to their document frequencies
+            total_docs: Total number of documents in corpus
+            
+        Returns:
+            BM25 relevance score
+        """
+        query_terms = self._tokenize(query)
+        doc_terms = self._tokenize(document)
+        
+        # Calculate term frequencies in document
+        term_freqs = {}
+        for term in doc_terms:
+            term_freqs[term] = term_freqs.get(term, 0) + 1
+        
+        # Calculate BM25 score
+        score = 0
+        for term in query_terms:
+            if term in term_freqs:
+                tf = term_freqs[term]
+                df = term_doc_freqs.get(term, 0)
+                idf = self._calculate_idf(df, total_docs)
+                
+                # BM25 formula
+                numerator = tf * (self.k1 + 1)
+                denominator = tf + self.k1 * (1 - self.b + self.b * (doc_length / avg_doc_length))
+                score += idf * (numerator / denominator)
+        
+        return score
+
 class MultiEngineAggregator:
     """Aggregate and deduplicate results from multiple search engines."""
     
-    def __init__(self):
+    def __init__(self, use_bm25: bool = True):
+        """
+        Initialize aggregator.
+        
+        Args:
+            use_bm25: Use BM25 scoring instead of simple word match scoring
+        """
         self.searcher = Searcher()
         self.query_expander = QueryExpander()
+        self.use_bm25 = use_bm25
+        if use_bm25:
+            self.bm25_scorer = BM25Scorer()
     
     def search_all(self, query: str, num_results: int = 10, 
                    expand_query: bool = False) -> List[Dict]:
@@ -2374,13 +3078,20 @@ class MultiEngineAggregator:
                 seen_urls.add(url)
                 unique_results.append(result)
         
-        # Rank by relevance (simple scoring based on title/snippet match)
+        # Rank by relevance (BM25 or simple scoring)
         ranked_results = self._rank_results(unique_results, query)
         
         return ranked_results[:num_results * 3]  # Return more results for aggregation
     
     def _rank_results(self, results: List[Dict], query: str) -> List[Dict]:
-        """Rank results by relevance score."""
+        """Rank results by relevance score using BM25 or simple scoring."""
+        if self.use_bm25 and len(results) > 0:
+            return self._rank_results_bm25(results, query)
+        else:
+            return self._rank_results_simple(results, query)
+    
+    def _rank_results_simple(self, results: List[Dict], query: str) -> List[Dict]:
+        """Rank results by simple word match scoring."""
         query_words = set(query.lower().split())
         
         for result in results:
@@ -2396,6 +3107,51 @@ class MultiEngineAggregator:
                     score += 1
             
             result['relevance_score'] = score
+        
+        # Sort by score descending
+        return sorted(results, key=lambda x: x.get('relevance_score', 0), reverse=True)
+    
+    def _rank_results_bm25(self, results: List[Dict], query: str) -> List[Dict]:
+        """Rank results using BM25 scoring algorithm."""
+        if not results:
+            return results
+        
+        # Prepare corpus for BM25
+        corpus = []
+        for result in results:
+            title = result.get('title', '')
+            snippet = result.get('snippet', '')
+            corpus.append(f"{title} {snippet}")
+        
+        # Calculate document lengths
+        doc_lengths = [len(self.bm25_scorer._tokenize(doc)) for doc in corpus]
+        avg_doc_length = sum(doc_lengths) / len(doc_lengths) if doc_lengths else 0
+        
+        # Calculate term document frequencies
+        term_doc_freqs = {}
+        for doc in corpus:
+            terms = set(self.bm25_scorer._tokenize(doc))
+            for term in terms:
+                term_doc_freqs[term] = term_doc_freqs.get(term, 0) + 1
+        
+        total_docs = len(results)
+        
+        # Calculate BM25 scores
+        for i, result in enumerate(results):
+            document = corpus[i]
+            doc_length = doc_lengths[i]
+            
+            bm25_score = self.bm25_scorer.score(
+                query=query,
+                document=document,
+                doc_length=doc_length,
+                avg_doc_length=avg_doc_length,
+                term_doc_freqs=term_doc_freqs,
+                total_docs=total_docs
+            )
+            
+            result['relevance_score'] = bm25_score
+            result['scoring_method'] = 'BM25'
         
         # Sort by score descending
         return sorted(results, key=lambda x: x.get('relevance_score', 0), reverse=True)
