@@ -547,7 +547,7 @@ class CancellableOperation:
 class RobotsTxtParser:
     """Comprehensive robots.txt parser with full directive support."""
     
-    def __init__(self, user_agent: str = '*'):
+    def __init__(self, user_agent: str = '*', cache_ttl: int = 3600):
         self.user_agent = user_agent
         self.robots_url = None
         self.raw_content = None
@@ -558,10 +558,13 @@ class RobotsTxtParser:
         self.disallowed_paths = set()
         self.allowed_paths = set()
         self.last_modified = None
+        self.cache_ttl = cache_ttl
+        self.fetched_at = None
         
     def fetch(self, base_url: str, session: requests.Session) -> bool:
         """Fetch and parse robots.txt from the given base URL."""
         from urllib.parse import urlparse
+        import time
         
         parsed = urlparse(base_url)
         self.robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
@@ -570,6 +573,7 @@ class RobotsTxtParser:
             response = session.get(self.robots_url, timeout=10)
             if response.status_code == 200:
                 self.raw_content = response.text
+                self.fetched_at = time.time()
                 self._parse()
                 return True
             return False
@@ -632,14 +636,27 @@ class RobotsTxtParser:
     
     def _apply_user_agent_rules(self):
         """Apply rules for the configured user agent."""
+        import fnmatch
+        
         # Try exact match first
         if self.user_agent in self.user_agent_records:
             record = self.user_agent_records[self.user_agent]
-        # Try wildcard
-        elif '*' in self.user_agent_records:
-            record = self.user_agent_records['*']
+        # Try wildcard matching
         else:
-            return
+            best_match = None
+            for ua_pattern in self.user_agent_records:
+                if fnmatch.fnmatch(self.user_agent, ua_pattern):
+                    # Prefer more specific patterns (longer is more specific)
+                    if best_match is None or len(ua_pattern) > len(best_match):
+                        best_match = ua_pattern
+            
+            # Fallback to wildcard
+            if best_match:
+                record = self.user_agent_records[best_match]
+            elif '*' in self.user_agent_records:
+                record = self.user_agent_records['*']
+            else:
+                return
         
         self.disallowed_paths = set(record['disallow'])
         self.allowed_paths = set(record['allow'])
@@ -649,22 +666,49 @@ class RobotsTxtParser:
     def can_fetch(self, url: str) -> bool:
         """Check if the given URL can be fetched according to robots.txt rules."""
         from urllib.parse import urlparse
+        import fnmatch
         
         parsed = urlparse(url)
         path = parsed.path
         
         # Check explicit allows first (they override disallows)
         for allowed in self.allowed_paths:
-            if path.startswith(allowed):
+            if self._match_pattern(path, allowed):
                 return True
         
         # Check disallows
         for disallowed in self.disallowed_paths:
-            if path.startswith(disallowed):
+            if self._match_pattern(path, disallowed):
                 return False
         
         # Default: allow
         return True
+    
+    def _match_pattern(self, path: str, pattern: str) -> bool:
+        """Match path against pattern with wildcard support (* and $)."""
+        import re
+        
+        # Handle $ as end-of-string marker
+        if pattern.endswith('$'):
+            pattern = pattern[:-1]
+            return path == pattern or path.startswith(pattern)
+        
+        # Handle * wildcard
+        if '*' in pattern:
+            # Convert robots.txt wildcard to regex
+            # * matches any sequence of characters
+            regex_pattern = pattern.replace('*', '.*')
+            return re.match(regex_pattern, path) is not None
+        
+        # Simple prefix match
+        return path.startswith(pattern)
+    
+    def is_cache_expired(self) -> bool:
+        """Check if the cached robots.txt has expired."""
+        import time
+        if self.fetched_at is None:
+            return True
+        return time.time() - self.fetched_at > self.cache_ttl
     
     def get_sitemap_urls(self) -> List[str]:
         """Return all sitemap URLs found in robots.txt."""
@@ -694,12 +738,14 @@ class RobotsTxtParser:
 class SitemapParser:
     """Comprehensive sitemap.xml parser with support for sitemap indexes and various formats."""
     
-    def __init__(self):
+    def __init__(self, max_recursion_depth: int = 5):
         self.urls = []
         self.sitemap_index_urls = []
         self.url_metadata = {}  # URL -> metadata (lastmod, changefreq, priority)
         self.raw_content = None
         self.sitemap_url = None
+        self.max_recursion_depth = max_recursion_depth
+        self.current_depth = 0
         
     def fetch(self, sitemap_url: str, session: requests.Session, recursive: bool = True) -> bool:
         """Fetch and parse the sitemap."""
@@ -708,7 +754,13 @@ class SitemapParser:
         try:
             response = session.get(sitemap_url, timeout=10)
             if response.status_code == 200:
-                self.raw_content = response.text
+                # Handle gzip compression
+                if sitemap_url.endswith('.gz') or response.headers.get('Content-Encoding') == 'gzip':
+                    import gzip
+                    import io
+                    self.raw_content = gzip.decompress(response.content).decode('utf-8')
+                else:
+                    self.raw_content = response.text
                 self._parse(recursive=recursive, session=session)
                 return True
             return False
@@ -723,6 +775,11 @@ class SitemapParser:
         import xml.etree.ElementTree as ET
         
         try:
+            # Use iterative parsing for large files
+            if len(self.raw_content) > 10 * 1024 * 1024:  # 10MB threshold
+                self._parse_streaming()
+                return
+            
             root = ET.fromstring(self.raw_content)
             
             # Check if this is a sitemap index
@@ -733,9 +790,10 @@ class SitemapParser:
                     child_sitemap_url = loc.text
                     if child_sitemap_url:
                         self.sitemap_index_urls.append(child_sitemap_url)
-                        if recursive and session:
-                            # Recursively parse child sitemaps
-                            child_parser = SitemapParser()
+                        if recursive and session and self.current_depth < self.max_recursion_depth:
+                            # Recursively parse child sitemaps with depth limit
+                            child_parser = SitemapParser(max_recursion_depth=self.max_recursion_depth)
+                            child_parser.current_depth = self.current_depth + 1
                             child_parser.fetch(child_sitemap_url, session, recursive=True)
                             self.urls.extend(child_parser.urls)
                             self.url_metadata.update(child_parser.url_metadata)
@@ -768,6 +826,50 @@ class SitemapParser:
                             
         except ET.ParseError:
             # Fallback to regex parsing if XML parsing fails
+            self._parse_with_regex()
+    
+    def _parse_streaming(self):
+        """Parse large XML files using iterative streaming."""
+        import xml.etree.ElementTree as ET
+        from io import StringIO
+        
+        context = ET.iterparse(StringIO(self.raw_content), events=('start', 'end'))
+        context = iter(context)
+        
+        try:
+            event, root = next(context)
+            
+            for event, elem in context:
+                if event == 'end':
+                    # Handle URL elements
+                    if elem.tag.endswith('url'):
+                        loc = elem.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc')
+                        if loc is not None and loc.text:
+                            url = loc.text
+                            self.urls.append(url)
+                            
+                            # Extract metadata
+                            metadata = {}
+                            lastmod = elem.find('{http://www.sitemaps.org/schemas/sitemap/0.9}lastmod')
+                            if lastmod is not None and lastmod.text:
+                                metadata['lastmod'] = lastmod.text
+                            
+                            changefreq = elem.find('{http://www.sitemaps.org/schemas/sitemap/0.9}changefreq')
+                            if changefreq is not None and changefreq.text:
+                                metadata['changefreq'] = changefreq.text
+                            
+                            priority = elem.find('{http://www.sitemaps.org/schemas/sitemap/0.9}priority')
+                            if priority is not None and priority.text:
+                                metadata['priority'] = priority.text
+                            
+                            if metadata:
+                                self.url_metadata[url] = metadata
+                    
+                    # Clear element to save memory
+                    elem.clear()
+                    
+        except Exception as e:
+            print(f"Streaming parse failed: {e}")
             self._parse_with_regex()
     
     def _parse_with_regex(self):
@@ -857,7 +959,8 @@ class Crawler(CancellableOperation):
                  rate_limit_delay: float = 1.0,
                  auth_credentials: Optional[Dict] = None,
                  use_disk_cache: bool = False,
-                 max_memory_results: int = 1000):
+                 max_memory_results: int = 1000,
+                 near_duplicate_threshold: float = 0.85):
         super().__init__()
         
         # Validate URL
@@ -888,10 +991,22 @@ class Crawler(CancellableOperation):
         self.max_memory_results = max_memory_results
         self._cache_dir = "crawl_cache"
         self._disk_cache_file = None
+        self.max_visited_urls = 10000  # LRU cache size for visited URLs
         
         if self.use_disk_cache:
             import os
             os.makedirs(self._cache_dir, exist_ok=True)
+        
+        # LRU cache for visited URLs
+        self._visited_urls_lru = []
+        self._visited_urls_dict = {}
+        
+        # Redirect tracking
+        self.redirect_chains: Dict[str, List[str]] = {}  # URL -> chain of redirects
+        self.max_redirects_per_url = 10
+        
+        # URL status tracking for progress callbacks
+        self.url_status: Dict[str, str] = {}  # URL -> status (queued, fetching, parsed, error)
         
         # Rate limiting and backoff
         self.domain_last_request: Dict[str, float] = {}
@@ -904,11 +1019,24 @@ class Crawler(CancellableOperation):
         
         # Content fingerprinting
         self.content_hashes: Dict[str, Simhash] = {}
-        self.near_duplicate_threshold = 0.85
+        self.near_duplicate_threshold = near_duplicate_threshold
         
         # Authentication
         if auth_credentials:
             self._setup_authentication()
+        
+        # Cookie jar persistence
+        self.cookie_jar_file = os.path.join(self._cache_dir, "cookies.json") if self.use_disk_cache else None
+        self._load_cookie_jar()
+        
+        # CSRF token extraction
+        self.csrf_token_patterns = [
+            r'name=["\']csrf["\']\s+value=["\']([^"\']+)["\']',
+            r'name=["\']_token["\']\s+value=["\']([^"\']+)["\']',
+            r'name=["\']authenticity_token["\']\s+value=["\']([^"\']+)["\']',
+            r'csrf["\']\s*:\s*["\']([^"\']+)["\']',
+            r'_token["\']\s*:\s*["\']([^"\']+)["\']',
+        ]
         
         # Playwright browser (lazy initialization)
         self.playwright_browser = None
@@ -936,6 +1064,97 @@ class Crawler(CancellableOperation):
             self.login_url = self.auth_credentials.get('login_url')
             self.login_data = self.auth_credentials.get('login_data', {})
     
+    def _load_cookie_jar(self):
+        """Load cookies from persistent storage."""
+        if not self.cookie_jar_file or not os.path.exists(self.cookie_jar_file):
+            return
+        
+        try:
+            import json
+            with open(self.cookie_jar_file, 'r', encoding='utf-8') as f:
+                cookies = json.load(f)
+                for cookie in cookies:
+                    self.session.cookies.set(**cookie)
+        except Exception as e:
+            print(f"Error loading cookie jar: {e}")
+    
+    def _save_cookie_jar(self):
+        """Save cookies to persistent storage."""
+        if not self.cookie_jar_file:
+            return
+        
+        try:
+            import json
+            cookies = []
+            for cookie in self.session.cookies:
+                cookies.append({
+                    'name': cookie.name,
+                    'value': cookie.value,
+                    'domain': cookie.domain,
+                    'path': cookie.path,
+                    'expires': cookie.expires
+                })
+            
+            with open(self.cookie_jar_file, 'w', encoding='utf-8') as f:
+                json.dump(cookies, f, indent=2)
+        except Exception as e:
+            print(f"Error saving cookie jar: {e}")
+    
+    def _extract_csrf_token(self, html_content: str) -> Optional[str]:
+        """Extract CSRF token from HTML content using multiple patterns."""
+        import re
+        
+        for pattern in self.csrf_token_patterns:
+            match = re.search(pattern, html_content, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        
+        return None
+    
+    def _check_redirect_loop(self, url: str, redirect_history: List[str]) -> bool:
+        """Check if a redirect loop is detected."""
+        # Check if URL appears multiple times in redirect chain
+        if redirect_history.count(url) > 1:
+            return True
+        
+        # Check if chain length exceeds limit
+        if len(redirect_history) > self.max_redirects_per_url:
+            return True
+        
+        # Check for circular redirects (A -> B -> C -> A)
+        if len(redirect_history) >= 3:
+            last_three = redirect_history[-3:]
+            if len(set(last_three)) < len(last_three):
+                return True
+        
+        return False
+    
+    def _track_redirect(self, original_url: str, redirect_url: str):
+        """Track redirect chain for a URL."""
+        if original_url not in self.redirect_chains:
+            self.redirect_chains[original_url] = []
+        
+        self.redirect_chains[original_url].append(redirect_url)
+        
+        # Check for redirect loop
+        if self._check_redirect_loop(redirect_url, self.redirect_chains[original_url]):
+            print(f"Redirect loop detected for {original_url}: {self.redirect_chains[original_url]}")
+            return True
+        
+        return False
+    
+    def _update_url_status(self, url: str, status: str):
+        """Update the status of a URL for progress tracking."""
+        self.url_status[url] = status
+    
+    def _get_url_status_summary(self) -> Dict[str, int]:
+        """Get a summary of URL statuses."""
+        summary = {'queued': 0, 'fetching': 0, 'parsed': 0, 'error': 0}
+        for status in self.url_status.values():
+            if status in summary:
+                summary[status] += 1
+        return summary
+    
     def _add_result(self, result: Dict):
         """Add result with memory management."""
         if self.use_disk_cache and len(self.results) >= self.max_memory_results:
@@ -943,6 +1162,21 @@ class Crawler(CancellableOperation):
             self._flush_to_disk()
         
         self.results.append(result)
+    
+    def _add_visited_url(self, url: str):
+        """Add URL to LRU cache with memory management."""
+        if url in self._visited_urls_dict:
+            # Move to front (most recently used)
+            self._visited_urls_lru.remove(url)
+            self._visited_urls_lru.append(url)
+        else:
+            # Add new URL
+            if len(self._visited_urls_lru) >= self.max_visited_urls:
+                # Remove least recently used
+                oldest = self._visited_urls_lru.pop(0)
+                del self._visited_urls_dict[oldest]
+            self._visited_urls_lru.append(url)
+            self._visited_urls_dict[url] = True
     
     def _flush_to_disk(self):
         """Flush results to disk cache for memory optimization."""
@@ -965,6 +1199,82 @@ class Crawler(CancellableOperation):
             self.results.clear()
         except Exception as e:
             print(f"Error flushing to disk cache: {e}")
+    
+    def _init_sqlite_db(self):
+        """Initialize SQLite database for persistent storage."""
+        import sqlite3
+        import os
+        
+        db_path = os.path.join(self._cache_dir, "crawl_data.db")
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Create tables
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS visited_urls (
+                url TEXT PRIMARY KEY,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS crawl_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT,
+                depth INTEGER,
+                type TEXT,
+                status_code INTEGER,
+                page_size INTEGER,
+                response_time REAL,
+                error TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        return db_path
+    
+    def _save_visited_url_to_db(self, url: str):
+        """Save visited URL to SQLite database."""
+        import sqlite3
+        import os
+        
+        db_path = os.path.join(self._cache_dir, "crawl_data.db")
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute('INSERT OR IGNORE INTO visited_urls (url) VALUES (?)', (url,))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Error saving visited URL to database: {e}")
+    
+    def _save_result_to_db(self, result: Dict):
+        """Save crawl result to SQLite database."""
+        import sqlite3
+        import os
+        
+        db_path = os.path.join(self._cache_dir, "crawl_data.db")
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO crawl_results (url, depth, type, status_code, page_size, response_time, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                result.get('url'),
+                result.get('depth'),
+                result.get('type'),
+                result.get('status_code'),
+                result.get('page_size'),
+                result.get('response_time'),
+                result.get('error')
+            ))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Error saving result to database: {e}")
     
     def _load_from_disk(self) -> List[Dict]:
         """Load results from disk cache."""
@@ -1022,7 +1332,7 @@ class Crawler(CancellableOperation):
         if not domain:
             return True
         
-        if domain not in self.robots_cache:
+        if domain not in self.robots_cache or self.robots_cache[domain].is_cache_expired():
             robots_parser = RobotsTxtParser(user_agent=self.session.headers.get('User-Agent', '*'))
             robots_parser.fetch(url, self.session)
             self.robots_cache[domain] = robots_parser
@@ -1195,10 +1505,12 @@ class Crawler(CancellableOperation):
                 self.playwright_context = await self.playwright_browser.new_context()
             
             page = await self.playwright_context.new_page()
-            await page.goto(url, wait_until='networkidle', timeout=30000)
-            content = await page.content()
-            await page.close()
-            return content
+            try:
+                await page.goto(url, wait_until='networkidle', timeout=30000)
+                content = await page.content()
+                return content
+            finally:
+                await page.close()
         except Exception as e:
             print(f"Playwright rendering failed: {e}")
             # Ensure cleanup on error
@@ -1385,11 +1697,13 @@ class Crawler(CancellableOperation):
             if url in self.visited_urls or depth > self.depth:
                 return None
             
-            self.visited_urls.add(url)
+            self._add_visited_url(url)
+            self._update_url_status(url, 'fetching')
             
             fetch_result = await self._fetch_page_async(session, url)
             
             if fetch_result is None:
+                self._update_url_status(url, 'error')
                 return {
                     'url': url,
                     'depth': depth,
@@ -1468,6 +1782,7 @@ class Crawler(CancellableOperation):
                     'page_size': page_size
                 }
             
+            self._update_url_status(url, 'parsed')
             return result
     
     async def crawl_async(self, 
@@ -1559,7 +1874,8 @@ class Crawler(CancellableOperation):
                         self.results.append(result)
                 
                 if progress_callback:
-                    progress_callback(len(self.visited_urls), len(self.results))
+                    status_summary = self._get_url_status_summary()
+                    progress_callback(len(self.visited_urls), len(self.results), status_summary)
         
         # Close Playwright if used
         await self._close_playwright()
@@ -1658,7 +1974,8 @@ class Crawler(CancellableOperation):
                 self.results.append(result)
                 continue
             
-            self.visited_urls.add(current_url)
+            self._add_visited_url(current_url)
+            self._update_url_status(current_url, 'fetching')
             
             try:
                 start_time = time.time()
@@ -1736,6 +2053,8 @@ class Crawler(CancellableOperation):
                         }
                         self.results.append(result)
                     
+                    self._update_url_status(current_url, 'parsed')
+                    
                     # Extract links for further crawling
                     if current_depth < self.depth:
                         for link in links:
@@ -1760,9 +2079,11 @@ class Crawler(CancellableOperation):
                             'page_size': page_size
                         }
                         self.results.append(result)
+                        self._update_url_status(current_url, 'parsed')
                 
                 if progress_callback:
-                    progress_callback(len(self.visited_urls), len(self.results))
+                    status_summary = self._get_url_status_summary()
+                    progress_callback(len(self.visited_urls), len(self.results), status_summary)
                     
             except requests.RequestException as e:
                 result = {
