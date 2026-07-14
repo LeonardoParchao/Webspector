@@ -2,9 +2,7 @@
 
 ## Project Overview
 
-**Developer:** Lparc
-
-Recon Tool is a comprehensive web reconnaissance and OSINT (Open Source Intelligence) suite built with Python and PyQt5. It provides a powerful graphical interface for security researchers, penetration testers, and cybersecurity professionals to perform web crawling, search engine scraping, subdomain discovery, vulnerability scanning, and advanced OSINT correlation.
+Webspector is a comprehensive web reconnaissance and OSINT (Open Source Intelligence) suite built with Python and PyQt5. It provides a powerful graphical interface for security researchers, penetration testers, and cybersecurity professionals to perform web crawling, search engine scraping, subdomain discovery, vulnerability scanning, and advanced OSINT correlation.
 
 The tool integrates multiple reconnaissance techniques into a single, user-friendly application with real-time progress tracking, data visualization, and export capabilities.
 
