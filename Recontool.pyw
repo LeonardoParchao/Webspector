@@ -15,7 +15,6 @@ import csv
 import asyncio
 import aiohttp
 from lxml import html as lxml_html
-from urllib.robotparser import RobotFileParser
 import hashlib
 import time
 import warnings
@@ -401,6 +400,309 @@ class CancellableOperation:
         with QMutexLocker(self._mutex):
             self._cancelled = True
 
+class RobotsTxtParser:
+    """Comprehensive robots.txt parser with full directive support."""
+    
+    def __init__(self, user_agent: str = '*'):
+        self.user_agent = user_agent
+        self.robots_url = None
+        self.raw_content = None
+        self.user_agent_records = {}
+        self.sitemap_urls = []
+        self.crawl_delay = None
+        self.request_rate = None
+        self.disallowed_paths = set()
+        self.allowed_paths = set()
+        self.last_modified = None
+        
+    def fetch(self, base_url: str, session: requests.Session) -> bool:
+        """Fetch and parse robots.txt from the given base URL."""
+        from urllib.parse import urlparse
+        
+        parsed = urlparse(base_url)
+        self.robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+        
+        try:
+            response = session.get(self.robots_url, timeout=10)
+            if response.status_code == 200:
+                self.raw_content = response.text
+                self._parse()
+                return True
+            return False
+        except Exception:
+            return False
+    
+    def _parse(self):
+        """Parse the robots.txt content."""
+        if not self.raw_content:
+            return
+        
+        current_user_agent = None
+        current_record = {'disallow': [], 'allow': [], 'crawl_delay': None, 'request_rate': None}
+        
+        for line in self.raw_content.split('\n'):
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            
+            # Split on first colon
+            if ':' not in line:
+                continue
+            
+            parts = line.split(':', 1)
+            directive = parts[0].strip().lower()
+            value = parts[1].strip() if len(parts) > 1 else ''
+            
+            if directive == 'user-agent':
+                # Save previous record
+                if current_user_agent:
+                    self.user_agent_records[current_user_agent] = current_record
+                
+                current_user_agent = value if value else '*'
+                current_record = {'disallow': [], 'allow': [], 'crawl_delay': None, 'request_rate': None}
+            
+            elif directive == 'disallow' and current_user_agent:
+                current_record['disallow'].append(value)
+            
+            elif directive == 'allow' and current_user_agent:
+                current_record['allow'].append(value)
+            
+            elif directive == 'crawl-delay' and current_user_agent:
+                try:
+                    current_record['crawl_delay'] = float(value)
+                except ValueError:
+                    pass
+            
+            elif directive == 'request-rate' and current_user_agent:
+                current_record['request_rate'] = value
+            
+            elif directive == 'sitemap':
+                self.sitemap_urls.append(value)
+        
+        # Save last record
+        if current_user_agent:
+            self.user_agent_records[current_user_agent] = current_record
+        
+        # Find best matching user agent record
+        self._apply_user_agent_rules()
+    
+    def _apply_user_agent_rules(self):
+        """Apply rules for the configured user agent."""
+        # Try exact match first
+        if self.user_agent in self.user_agent_records:
+            record = self.user_agent_records[self.user_agent]
+        # Try wildcard
+        elif '*' in self.user_agent_records:
+            record = self.user_agent_records['*']
+        else:
+            return
+        
+        self.disallowed_paths = set(record['disallow'])
+        self.allowed_paths = set(record['allow'])
+        self.crawl_delay = record['crawl_delay']
+        self.request_rate = record['request_rate']
+    
+    def can_fetch(self, url: str) -> bool:
+        """Check if the given URL can be fetched according to robots.txt rules."""
+        from urllib.parse import urlparse
+        
+        parsed = urlparse(url)
+        path = parsed.path
+        
+        # Check explicit allows first (they override disallows)
+        for allowed in self.allowed_paths:
+            if path.startswith(allowed):
+                return True
+        
+        # Check disallows
+        for disallowed in self.disallowed_paths:
+            if path.startswith(disallowed):
+                return False
+        
+        # Default: allow
+        return True
+    
+    def get_sitemap_urls(self) -> List[str]:
+        """Return all sitemap URLs found in robots.txt."""
+        return self.sitemap_urls
+    
+    def get_crawl_delay(self) -> Optional[float]:
+        """Return the crawl delay in seconds."""
+        return self.crawl_delay
+    
+    def get_request_rate(self) -> Optional[str]:
+        """Return the request rate directive."""
+        return self.request_rate
+    
+    def get_disallowed_paths(self) -> Set[str]:
+        """Return all disallowed paths."""
+        return self.disallowed_paths
+    
+    def get_allowed_paths(self) -> Set[str]:
+        """Return all allowed paths."""
+        return self.allowed_paths
+    
+    def get_raw_content(self) -> Optional[str]:
+        """Return the raw robots.txt content."""
+        return self.raw_content
+
+
+class SitemapParser:
+    """Comprehensive sitemap.xml parser with support for sitemap indexes and various formats."""
+    
+    def __init__(self):
+        self.urls = []
+        self.sitemap_index_urls = []
+        self.url_metadata = {}  # URL -> metadata (lastmod, changefreq, priority)
+        self.raw_content = None
+        self.sitemap_url = None
+        
+    def fetch(self, sitemap_url: str, session: requests.Session, recursive: bool = True) -> bool:
+        """Fetch and parse the sitemap."""
+        self.sitemap_url = sitemap_url
+        
+        try:
+            response = session.get(sitemap_url, timeout=10)
+            if response.status_code == 200:
+                self.raw_content = response.text
+                self._parse(recursive=recursive, session=session)
+                return True
+            return False
+        except Exception:
+            return False
+    
+    def _parse(self, recursive: bool = True, session: requests.Session = None):
+        """Parse the sitemap XML content."""
+        if not self.raw_content:
+            return
+        
+        import xml.etree.ElementTree as ET
+        
+        try:
+            root = ET.fromstring(self.raw_content)
+            
+            # Check if this is a sitemap index
+            sitemap_locs = root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc')
+            if sitemap_locs and not root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}url'):
+                # This is a sitemap index
+                for loc in sitemap_locs:
+                    child_sitemap_url = loc.text
+                    if child_sitemap_url:
+                        self.sitemap_index_urls.append(child_sitemap_url)
+                        if recursive and session:
+                            # Recursively parse child sitemaps
+                            child_parser = SitemapParser()
+                            child_parser.fetch(child_sitemap_url, session, recursive=True)
+                            self.urls.extend(child_parser.urls)
+                            self.url_metadata.update(child_parser.url_metadata)
+            else:
+                # This is a regular URL sitemap
+                url_elements = root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}url')
+                
+                for url_elem in url_elements:
+                    loc = url_elem.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc')
+                    if loc is not None and loc.text:
+                        url = loc.text
+                        self.urls.append(url)
+                        
+                        # Extract metadata
+                        metadata = {}
+                        lastmod = url_elem.find('{http://www.sitemaps.org/schemas/sitemap/0.9}lastmod')
+                        if lastmod is not None and lastmod.text:
+                            metadata['lastmod'] = lastmod.text
+                        
+                        changefreq = url_elem.find('{http://www.sitemaps.org/schemas/sitemap/0.9}changefreq')
+                        if changefreq is not None and changefreq.text:
+                            metadata['changefreq'] = changefreq.text
+                        
+                        priority = url_elem.find('{http://www.sitemaps.org/schemas/sitemap/0.9}priority')
+                        if priority is not None and priority.text:
+                            metadata['priority'] = priority.text
+                        
+                        if metadata:
+                            self.url_metadata[url] = metadata
+                            
+        except ET.ParseError:
+            # Fallback to regex parsing if XML parsing fails
+            self._parse_with_regex()
+    
+    def _parse_with_regex(self):
+        """Fallback regex-based parsing for malformed XML."""
+        import re
+        
+        if not self.raw_content:
+            return
+        
+        # Extract URLs with regex
+        url_pattern = r'<loc>(.*?)</loc>'
+        matches = re.findall(url_pattern, self.raw_content)
+        self.urls.extend(matches)
+        
+        # Try to extract sitemap index URLs
+        sitemap_pattern = r'<sitemap>.*?<loc>(.*?)</loc>.*?</sitemap>'
+        sitemap_matches = re.findall(sitemap_pattern, self.raw_content, re.DOTALL)
+        self.sitemap_index_urls.extend(sitemap_matches)
+    
+    def get_urls(self) -> List[str]:
+        """Return all URLs found in the sitemap."""
+        return self.urls
+    
+    def get_url_metadata(self, url: str) -> Dict:
+        """Return metadata for a specific URL."""
+        return self.url_metadata.get(url, {})
+    
+    def get_all_metadata(self) -> Dict:
+        """Return all URL metadata."""
+        return self.url_metadata
+    
+    def get_sitemap_index_urls(self) -> List[str]:
+        """Return URLs of child sitemaps (if this is a sitemap index)."""
+        return self.sitemap_index_urls
+    
+    def get_urls_by_priority(self, min_priority: float = 0.5) -> List[str]:
+        """Return URLs with priority >= min_priority."""
+        high_priority_urls = []
+        for url, metadata in self.url_metadata.items():
+            priority = metadata.get('priority', '0.5')
+            try:
+                if float(priority) >= min_priority:
+                    high_priority_urls.append(url)
+            except ValueError:
+                pass
+        return high_priority_urls
+    
+    def get_urls_by_change_frequency(self, frequency: str) -> List[str]:
+        """Return URLs with specific change frequency."""
+        matching_urls = []
+        for url, metadata in self.url_metadata.items():
+            if metadata.get('changefreq', '').lower() == frequency.lower():
+                matching_urls.append(url)
+        return matching_urls
+    
+    def get_recent_urls(self, days: int = 7) -> List[str]:
+        """Return URLs modified within the last N days."""
+        from datetime import datetime, timedelta
+        
+        recent_urls = []
+        cutoff_date = datetime.now() - timedelta(days=days)
+        
+        for url, metadata in self.url_metadata.items():
+            lastmod = metadata.get('lastmod')
+            if lastmod:
+                try:
+                    mod_date = datetime.fromisoformat(lastmod.replace('Z', '+00:00'))
+                    if mod_date >= cutoff_date:
+                        recent_urls.append(url)
+                except (ValueError, AttributeError):
+                    pass
+        
+        return recent_urls
+    
+    def get_raw_content(self) -> Optional[str]:
+        """Return the raw sitemap content."""
+        return self.raw_content
+
+
 class Crawler(CancellableOperation):
     def __init__(self, url: str, depth: int, 
                  use_async: bool = True,
@@ -452,8 +754,9 @@ class Crawler(CancellableOperation):
         self.domain_retry_count: Dict[str, int] = {}
         self.max_retries = 3
         
-        # Robots.txt cache
-        self.robots_cache: Dict[str, RobotFileParser] = {}
+        # Robots.txt and sitemap cache
+        self.robots_cache: Dict[str, RobotsTxtParser] = {}
+        self.sitemap_cache: Dict[str, SitemapParser] = {}
         
         # Content fingerprinting
         self.content_hashes: Dict[str, Simhash] = {}
@@ -575,88 +878,79 @@ class Crawler(CancellableOperation):
             return True
         
         if domain not in self.robots_cache:
-            robots_url = f"{urlparse(url).scheme}://{domain}/robots.txt"
-            rp = RobotFileParser()
-            rp.set_url(robots_url)
-            try:
-                rp.read()
-            except:
-                # If robots.txt is unavailable, allow crawling
-                rp = None
-            self.robots_cache[domain] = rp
+            robots_parser = RobotsTxtParser(user_agent=self.session.headers.get('User-Agent', '*'))
+            robots_parser.fetch(url, self.session)
+            self.robots_cache[domain] = robots_parser
         
-        rp = self.robots_cache[domain]
-        if rp is None:
-            return True
-        
-        return rp.can_fetch(self.session.headers.get('User-Agent', '*'), url)
+        robots_parser = self.robots_cache[domain]
+        return robots_parser.can_fetch(url)
     
     def _get_crawl_delay(self, domain: str) -> float:
         """Get crawl delay from robots.txt or use default."""
         if domain in self.robots_cache and self.robots_cache[domain]:
-            delay = self.robots_cache[domain].crawl_delay(self.session.headers.get('User-Agent', '*'))
+            delay = self.robots_cache[domain].get_crawl_delay()
             if delay is not None:
                 return max(delay, self.rate_limit_delay)
         return self.rate_limit_delay
     
     def _parse_robots_txt_for_urls(self, url: str) -> Set[str]:
-        """Parse robots.txt to extract URLs when respect_robots is False."""
+        """Parse robots.txt to extract sitemap URLs."""
         urls = set()
         domain = self._get_domain(url)
         if not domain:
             return urls
         
-        robots_url = f"{urlparse(url).scheme}://{domain}/robots.txt"
+        if domain not in self.robots_cache:
+            robots_parser = RobotsTxtParser(user_agent=self.session.headers.get('User-Agent', '*'))
+            robots_parser.fetch(url, self.session)
+            self.robots_cache[domain] = robots_parser
         
-        try:
-            response = self.session.get(robots_url, timeout=10)
-            if response.status_code == 200:
-                content = response.text
-                # Extract Sitemap directives
-                for line in content.split('\n'):
-                    line = line.strip()
-                    if line.lower().startswith('sitemap:'):
-                        sitemap_url = line.split(':', 1)[1].strip()
-                        urls.add(sitemap_url)
-        except Exception as e:
-            pass  # Silently fail if robots.txt is unavailable
+        robots_parser = self.robots_cache[domain]
+        sitemap_urls = robots_parser.get_sitemap_urls()
+        urls.update(sitemap_urls)
         
         return urls
     
     def _parse_sitemap_xml(self, sitemap_url: str) -> Set[str]:
-        """Parse sitemap.xml to extract URLs."""
-        urls = set()
+        """Parse sitemap.xml to extract URLs using the enhanced parser."""
+        if sitemap_url in self.sitemap_cache:
+            return set(self.sitemap_cache[sitemap_url].get_urls())
         
-        try:
-            response = self.session.get(sitemap_url, timeout=10)
-            if response.status_code == 200:
-                # Try to parse as XML
-                try:
-                    import xml.etree.ElementTree as ET
-                    root = ET.fromstring(response.text)
-                    
-                    # Handle sitemap index (references to other sitemaps)
-                    for loc in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc'):
-                        child_sitemap_url = loc.text
-                        if child_sitemap_url:
-                            # Recursively parse child sitemaps
-                            urls.update(self._parse_sitemap_xml(child_sitemap_url))
-                    
-                    # Handle regular sitemap with URLs
-                    for loc in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}url/{http://www.sitemaps.org/schemas/sitemap/0.9}loc'):
-                        url = loc.text
-                        if url:
-                            urls.add(url)
-                except Exception as xml_error:
-                    # Fallback to regex parsing if XML parsing fails
-                    import re
-                    url_pattern = r'<loc>(.*?)</loc>'
-                    matches = re.findall(url_pattern, response.text)
-                    urls.update(matches)
-        except Exception as e:
-            pass  # Silently fail if sitemap is unavailable
+        sitemap_parser = SitemapParser()
+        sitemap_parser.fetch(sitemap_url, self.session, recursive=True)
+        self.sitemap_cache[sitemap_url] = sitemap_parser
         
-        return urls
+        return set(sitemap_parser.get_urls())
+    
+    def get_sitemap_metadata(self, sitemap_url: str) -> Dict:
+        """Get metadata for all URLs in a sitemap."""
+        if sitemap_url not in self.sitemap_cache:
+            sitemap_parser = SitemapParser()
+            sitemap_parser.fetch(sitemap_url, self.session, recursive=True)
+            self.sitemap_cache[sitemap_url] = sitemap_parser
+        
+        return self.sitemap_cache[sitemap_url].get_all_metadata()
+    
+    def get_robots_info(self, url: str) -> Dict:
+        """Get comprehensive robots.txt information for a domain."""
+        domain = self._get_domain(url)
+        if not domain:
+            return {}
+        
+        if domain not in self.robots_cache:
+            robots_parser = RobotsTxtParser(user_agent=self.session.headers.get('User-Agent', '*'))
+            robots_parser.fetch(url, self.session)
+            self.robots_cache[domain] = robots_parser
+        
+        robots_parser = self.robots_cache[domain]
+        return {
+            'disallowed_paths': list(robots_parser.get_disallowed_paths()),
+            'allowed_paths': list(robots_parser.get_allowed_paths()),
+            'crawl_delay': robots_parser.get_crawl_delay(),
+            'request_rate': robots_parser.get_request_rate(),
+            'sitemap_urls': robots_parser.get_sitemap_urls(),
+            'raw_content': robots_parser.get_raw_content()
+        }
     
     def _apply_rate_limit(self, url: str):
         """Apply rate limiting with exponential backoff and jitter."""
