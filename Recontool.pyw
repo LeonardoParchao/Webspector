@@ -5832,7 +5832,9 @@ class WHOISAnalyzer:
                 try:
                     response = self.session.get(service, timeout=10)
                     if response.status_code == 200:
-                        # Parse basic WHOIS info from response
+                        # Parse HTML with BeautifulSoup
+                        soup = BeautifulSoup(response.text, 'html.parser')
+                        
                         result = {
                             'domain': domain,
                             'source': service,
@@ -5840,16 +5842,15 @@ class WHOISAnalyzer:
                             'info': 'WHOIS data retrieved from web service'
                         }
                         
-                        # Try to extract common fields
-                        text = response.text.lower()
-                        if 'registrar' in text:
-                            result['registrar_found'] = True
-                        if 'creation date' in text or 'created' in text:
-                            result['creation_date_found'] = True
-                        if 'expiration date' in text or 'expires' in text:
-                            result['expiration_date_found'] = True
-                        if 'name server' in text or 'nameserver' in text:
-                            result['nameservers_found'] = True
+                        # Extract data from who.is
+                        if 'who.is' in service:
+                            result.update(self._extract_whois_data(soup))
+                        # Extract data from whois.com
+                        elif 'whois.com' in service:
+                            result.update(self._extract_whois_com_data(soup))
+                        # Extract data from domaininformation.com
+                        else:
+                            result.update(self._extract_generic_whois_data(soup))
                         
                         return result
                 except:
@@ -5862,6 +5863,124 @@ class WHOISAnalyzer:
             }
         except Exception as e:
             return {'error': f'Domain WHOIS failed: {str(e)}'}
+    
+    def _extract_whois_data(self, soup: BeautifulSoup) -> Dict:
+        """Extract WHOIS data from who.is."""
+        data = {}
+        
+        # Try to find data in various common structures
+        # Look for table rows with labels
+        rows = soup.find_all(['tr', 'div'])
+        for row in rows:
+            text = row.get_text(strip=True)
+            if ':' in text:
+                parts = text.split(':', 1)
+                if len(parts) == 2:
+                    key = parts[0].strip().lower()
+                    value = parts[1].strip()
+                    if value and value != 'N/A':
+                        # Map common keys
+                        if 'registrar' in key:
+                            data['registrar'] = value
+                        elif 'created' in key or 'creation' in key:
+                            data['creation_date'] = value
+                        elif 'expires' in key or 'expiration' in key:
+                            data['expiration_date'] = value
+                        elif 'updated' in key:
+                            data['updated_date'] = value
+                        elif 'nameserver' in key or 'name server' in key:
+                            if 'nameservers' not in data:
+                                data['nameservers'] = []
+                            data['nameservers'].append(value)
+                        elif 'registrant' in key and 'name' in key:
+                            data['registrant_name'] = value
+                        elif 'registrant' in key and 'email' in key:
+                            data['registrant_email'] = value
+                        elif 'registrant' in key and 'organization' in key:
+                            data['registrant_org'] = value
+                        elif 'status' in key:
+                            data['status'] = value
+                        elif 'dnssec' in key:
+                            data['dnssec'] = value
+        
+        return data
+    
+    def _extract_whois_com_data(self, soup: BeautifulSoup) -> Dict:
+        """Extract WHOIS data from whois.com."""
+        data = {}
+        
+        # Look for data in df-raw or pre tags
+        raw_data = soup.find(['pre', 'code', 'div'], class_=lambda x: x and ('raw' in str(x).lower() or 'whois' in str(x).lower()))
+        if raw_data:
+            text = raw_data.get_text()
+            lines = text.split('\n')
+            for line in lines:
+                if ':' in line:
+                    parts = line.split(':', 1)
+                    if len(parts) == 2:
+                        key = parts[0].strip().lower()
+                        value = parts[1].strip()
+                        if value and value != 'N/A':
+                            if 'registrar' in key:
+                                data['registrar'] = value
+                            elif 'created' in key or 'creation' in key:
+                                data['creation_date'] = value
+                            elif 'expires' in key or 'expiration' in key:
+                                data['expiration_date'] = value
+                            elif 'updated' in key:
+                                data['updated_date'] = value
+                            elif 'nameserver' in key or 'name server' in key:
+                                if 'nameservers' not in data:
+                                    data['nameservers'] = []
+                                data['nameservers'].append(value)
+                            elif 'registrant' in key and 'name' in key:
+                                data['registrant_name'] = value
+                            elif 'registrant' in key and 'email' in key:
+                                data['registrant_email'] = value
+                            elif 'status' in key:
+                                data['status'] = value
+        else:
+            # Fallback to generic extraction
+            data = self._extract_generic_whois_data(soup)
+        
+        return data
+    
+    def _extract_generic_whois_data(self, soup: BeautifulSoup) -> Dict:
+        """Extract WHOIS data using generic patterns."""
+        data = {}
+        
+        # Get all text and try to extract key-value pairs
+        text = soup.get_text()
+        lines = text.split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if ':' in line:
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    key = parts[0].strip().lower()
+                    value = parts[1].strip()
+                    if value and value != 'N/A' and len(value) > 2:
+                        if 'registrar' in key:
+                            data['registrar'] = value
+                        elif 'created' in key or 'creation' in key:
+                            data['creation_date'] = value
+                        elif 'expires' in key or 'expiration' in key:
+                            data['expiration_date'] = value
+                        elif 'updated' in key:
+                            data['updated_date'] = value
+                        elif 'nameserver' in key or 'name server' in key:
+                            if 'nameservers' not in data:
+                                data['nameservers'] = []
+                            data['nameservers'].append(value)
+                        elif 'registrant' in key and 'name' in key:
+                            data['registrant_name'] = value
+                        elif 'registrant' in key and 'email' in key:
+                            data['registrant_email'] = value
+                        elif 'status' in key:
+                            data['status'] = value
+        
+        return data
     
     def _ip_whois(self, ip: str) -> Dict:
         """IP WHOIS lookup using public services."""
@@ -8338,6 +8457,29 @@ class GUI(QMainWindow):
                 output += f"Source: {result.get('source', 'N/A')}\n"
                 output += f"Info: {result.get('info', 'N/A')}\n\n"
                 
+                # Display extracted WHOIS data
+                if 'registrar' in result:
+                    output += f"Registrar: {result['registrar']}\n"
+                if 'creation_date' in result:
+                    output += f"Creation Date: {result['creation_date']}\n"
+                if 'expiration_date' in result:
+                    output += f"Expiration Date: {result['expiration_date']}\n"
+                if 'updated_date' in result:
+                    output += f"Updated Date: {result['updated_date']}\n"
+                if 'nameservers' in result:
+                    output += f"Nameservers: {', '.join(result['nameservers'])}\n"
+                if 'registrant_name' in result:
+                    output += f"Registrant Name: {result['registrant_name']}\n"
+                if 'registrant_email' in result:
+                    output += f"Registrant Email: {result['registrant_email']}\n"
+                if 'registrant_org' in result:
+                    output += f"Registrant Organization: {result['registrant_org']}\n"
+                if 'status' in result:
+                    output += f"Status: {result['status']}\n"
+                if 'dnssec' in result:
+                    output += f"DNSSEC: {result['dnssec']}\n"
+                
+                # IP-specific fields
                 if 'country' in result:
                     output += f"Country: {result['country']}\n"
                 if 'isp' in result:
@@ -8346,14 +8488,7 @@ class GUI(QMainWindow):
                     output += f"Organization: {result['organization']}\n"
                 if 'asn' in result:
                     output += f"ASN: {result['asn']}\n"
-                if 'registrar_found' in result:
-                    output += f"Registrar: Found\n"
-                if 'creation_date_found' in result:
-                    output += f"Creation Date: Found\n"
-                if 'expiration_date_found' in result:
-                    output += f"Expiration Date: Found\n"
-                if 'nameservers_found' in result:
-                    output += f"Nameservers: Found\n"
+                
                 if 'raw_response' in result:
                     output += f"\nRaw Response (truncated):\n{result['raw_response']}\n"
                 
