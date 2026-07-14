@@ -3078,7 +3078,12 @@ class ContactHarvester:
         self.patterns[name] = pattern
 
 class TechnologyStackFingerprinter:
-    """Detect CMS, JS frameworks, web servers, analytics, and versions (Wappalyzer-style)."""
+    """Advanced technology stack detection with confidence scoring, multiple detection methods, and comprehensive analysis."""
+    
+    # Confidence levels
+    CONFIDENCE_HIGH = 0.9
+    CONFIDENCE_MEDIUM = 0.6
+    CONFIDENCE_LOW = 0.3
     
     TECHNOLOGY_SIGNATURES = {
         'cms': {
@@ -3466,6 +3471,260 @@ class TechnologyStackFingerprinter:
             'Reddit': ['reddit.com', 'reddit-'],
             'Discord': ['discord.com', 'discord-'],
         },
+        'javascript_libraries': {
+            'Chart.js': ['chart.js', 'chartjs', 'Chart'],
+            'D3.js': ['d3', 'd3.js', 'd3.v'],
+            'Three.js': ['three', 'three.js', 'three.min'],
+            'Moment.js': ['moment', 'moment.js', 'moment.min'],
+            'Lodash': ['lodash', 'lodash.min', '_'],
+            'Axios': ['axios', 'axios.min'],
+            'Socket.io': ['socket.io', 'socket.io.js'],
+            'GSAP': ['gsap', 'greensock'],
+            'Anime.js': ['anime', 'anime.min'],
+            'AOS': ['aos', 'aos.css'],
+            'Swiper': ['swiper', 'swiper.min'],
+            'Slick': ['slick', 'slick.min'],
+            'Owl Carousel': ['owl.carousel', 'owl-carousel'],
+            'Fancybox': ['fancybox', 'fancybox.min'],
+            'Lightbox': ['lightbox', 'lightbox.min'],
+            'Pickaday': ['pickaday', 'pikaday'],
+            'Flatpickr': ['flatpickr', 'flatpickr.min'],
+            'Datepicker': ['datepicker', 'bootstrap-datepicker'],
+            'Select2': ['select2', 'select2.min'],
+            'Choices.js': ['choices', 'choices.min'],
+            'Dropzone': ['dropzone', 'dropzone.min'],
+            'Sortable': ['sortable', 'sortable.min'],
+            'Draggable': ['draggable', 'draggable.min'],
+            'Hammer.js': ['hammer', 'hammer.min'],
+            'Velocity.js': ['velocity', 'velocity.min'],
+            'Waypoints': ['waypoints', 'waypoint'],
+            'CountUp.js': ['countup', 'countup.min'],
+            'Typed.js': ['typed', 'typed.min'],
+            'Particles.js': ['particles', 'particles.min'],
+            'Canvas Confetti': ['canvas-confetti', 'confetti'],
+        },
+        'web frameworks': {
+            'Django': ['django', 'csrftoken'],
+            'Flask': ['flask', 'werkzeug'],
+            'Rails': ['rails', 'ruby on rails', 'rails-ujs'],
+            'Laravel': ['laravel', 'x-csrf-token'],
+            'Spring Boot': ['spring boot', 'springframework'],
+            'Express.js': ['express', 'express-'],
+            'FastAPI': ['fastapi', 'uvicorn'],
+            'NestJS': ['nest', '@nestjs'],
+            'ASP.NET Core': ['asp.net core', '.net core'],
+            'Symfony': ['symfony', 'sf_'],
+            'CakePHP': ['cakephp', 'cake-'],
+            'CodeIgniter': ['codeigniter', 'ci_'],
+            'Zend Framework': ['zend', 'zf2'],
+            'Laminas': ['laminas', 'mezzio'],
+            'Phalcon': ['phalcon', 'phalcon-'],
+            'Slim': ['slim', 'slimframework'],
+            'Sails.js': ['sails', 'sails.io'],
+            'Hapi': ['hapi', '@hapi'],
+            'Koa': ['koa', 'koa-'],
+            'Fiber': ['fiber', 'gofiber'],
+            'Gin': ['gin-gonic', 'gin-'],
+            'Echo': ['echo', 'echo-'],
+            'Actix': ['actix', 'actix-web'],
+            'Rocket': ['rocket', 'rocket.rs'],
+        },
+        'task_runners': {
+            'Webpack': ['webpack', '__webpack'],
+            'Vite': ['vite', '/@vite/'],
+            'Rollup': ['rollup', 'rollup.js'],
+            'Parcel': ['parcel', 'parcel.js'],
+            'esbuild': ['esbuild', 'esbuild-'],
+            'Babel': ['babel', 'babel-'],
+            'Gulp': ['gulp', 'gulpfile'],
+            'Grunt': ['grunt', 'gruntfile'],
+            'Browserify': ['browserify', 'browserify-'],
+            'Snowpack': ['snowpack', 'snowpack/'],
+            'Turbopack': ['turbo', 'turbopack'],
+            'Rome': ['rome', 'rome-'],
+            'SWC': ['swc', '@swc'],
+            'Rspack': ['rspack', '@rspack'],
+        },
+        'css_preprocessors': {
+            'Sass': ['scss', 'sass'],
+            'Less': ['less', 'lesscss'],
+            'Stylus': ['stylus', 'styl'],
+            'PostCSS': ['postcss', 'postcss-'],
+            'Tailwind CSS': ['tailwindcss', 'tailwind'],
+        },
+        'template_engines': {
+            'Jinja2': ['jinja2', 'jinja'],
+            'Mako': ['mako', 'mako-'],
+            'Mustache': ['mustache', '{{'],
+            'Handlebars': ['handlebars', 'handlebars-'],
+            'EJS': ['ejs', '<%'],
+            'Pug': ['pug', 'jade'],
+            'Haml': ['haml', '%'],
+            'Slim': ['slim', 'slim-'],
+            'Nunjucks': ['nunjucks', 'njk'],
+            'Liquid': ['liquid', '{%'],
+            'Blade': ['blade', 'laravel blade'],
+            'Twig': ['twig', '{{'],
+            'ERB': ['erb', '<%='],
+            'Eco': ['eco', '<%-'],
+            'Dust': ['dust', '{ dust'],
+        },
+        'database_tools': {
+            'Prisma': ['prisma', '@prisma'],
+            'Sequelize': ['sequelize', '@sequelize'],
+            'TypeORM': ['typeorm', '@typeorm'],
+            'Mongoose': ['mongoose', '@mongoose'],
+            'Knex': ['knex', 'knex-'],
+            'Bookshelf': ['bookshelf', 'bookshelf-'],
+            'Objection.js': ['objection', 'objection-'],
+            'Waterline': ['waterline', 'sails-'],
+            'Hibernate': ['hibernate', 'hibernate-'],
+            'Entity Framework': ['entity framework', 'ef core'],
+            'Dapper': ['dapper', 'dapper-'],
+            'SQLAlchemy': ['sqlalchemy', 'flask-sqlalchemy'],
+            'Peewee': ['peewee', 'peewee-'],
+            'MongoEngine': ['mongoengine', 'mongo-'],
+            'Doctrine': ['doctrine', 'doctrine-'],
+            'Propel': ['propel', 'propel-'],
+        },
+        'api_clients': {
+            'Apollo Client': ['apollo', '@apollo'],
+            'Relay': ['relay', '@relay'],
+            'urql': ['urql', '@urql'],
+            'SWR': ['swr', 'useSWR'],
+            'React Query': ['react-query', '@tanstack/react-query'],
+            'Vue Query': ['vue-query', '@tanstack/vue-query'],
+            'Axios': ['axios', 'axios-'],
+            'Fetch API': ['fetch(', 'window.fetch'],
+            'SuperAgent': ['superagent', 'superagent-'],
+            'Got': ['got', 'got-'],
+            'node-fetch': ['node-fetch', 'node-fetch-'],
+            'Ky': ['ky', 'ky-'],
+            'Wretch': ['wretch', 'wretch-'],
+        },
+        'state_management': {
+            'Redux': ['redux', '@redux'],
+            'MobX': ['mobx', '@mobx'],
+            'Vuex': ['vuex', 'store'],
+            'Pinia': ['pinia', '@pinia'],
+            'Zustand': ['zustand', '@zustand'],
+            'Recoil': ['recoil', '@recoil'],
+            'Jotai': ['jotai', '@jotai'],
+            'Valtio': ['valtio', '@valtio'],
+            'XState': ['xstate', '@xstate'],
+            'Effector': ['effector', '@effector'],
+            'NgRx': ['ngrx', '@ngrx'],
+            'Akita': ['akita', '@datorama'],
+        },
+        'form_validation': {
+            'Formik': ['formik', '@formik'],
+            'React Hook Form': ['react-hook-form', '@hookform'],
+            'Yup': ['yup', '@yup'],
+            'Zod': ['zod', '@zod'],
+            'Joi': ['joi', '@hapi/joi'],
+            'VeeValidate': ['vee-validate', '@vee-validate'],
+            'Validator.js': ['validator', 'validator-'],
+            'Ajv': ['ajv', 'ajv-'],
+        },
+        'testing_libraries': {
+            'Jest': ['jest', '@jest'],
+            'Mocha': ['mocha', 'mocha.js'],
+            'Chai': ['chai', 'chai.js'],
+            'Jasmine': ['jasmine', 'jasmine.js'],
+            'Cypress': ['cypress', '@cypress'],
+            'Playwright': ['playwright', '@playwright'],
+            'Selenium': ['selenium', 'selenium-'],
+            'Puppeteer': ['puppeteer', '@puppeteer'],
+            'Testing Library': ['testing-library', '@testing-library'],
+            'Vitest': ['vitest', '@vitest'],
+            'Karma': ['karma', 'karma-'],
+            'Protractor': ['protractor', '@angular/protractor'],
+            'Supertest': ['supertest', 'supertest-'],
+            'MSW': ['msw', 'msw-'],
+            'Nock': ['nock', 'nock-'],
+        },
+        'graphql': {
+            'Apollo Server': ['apollo-server', '@apollo/server'],
+            'GraphQL Yoga': ['graphql-yoga', '@graphql-yoga'],
+            'Mercurius': ['mercurius', '@mercurius'],
+            'Apollo GraphQL': ['apollo', '@apollo'],
+            'Relay': ['relay', '@relay'],
+            'Urql': ['urql', '@urql'],
+            'GraphQL Code Generator': ['graphql-codegen', '@graphql-codegen'],
+            'GraphQL Tools': ['graphql-tools', '@graphql-tools'],
+        },
+        'realtime': {
+            'Socket.io': ['socket.io', 'socket.io.js'],
+            'Pusher': ['pusher', 'pusher-js'],
+            'Ably': ['ably', 'ably-js'],
+            'SignalR': ['signalr', '@microsoft/signalr'],
+            'Phoenix Channels': ['phoenix', 'phoenix-'],
+            'Action Cable': ['actioncable', '@rails/actioncable'],
+            'Fanout': ['fanout', 'fanout-'],
+            'Deepstream': ['deepstream', 'deepstream-'],
+        },
+        'performance': {
+            'Lighthouse': ['lighthouse', 'lighthouse-'],
+            'WebPageTest': ['webpagetest', 'webpagetest-'],
+            'GTmetrix': ['gtmetrix', 'gtmetrix-'],
+            'PageSpeed': ['pagespeed', 'pagespeed-'],
+            'Webpack Bundle Analyzer': ['bundle-analyzer', 'webpack-bundle-analyzer'],
+            'Source Map Explorer': ['source-map-explorer', 'sourcemaps'],
+        },
+        'pwa': {
+            'Workbox': ['workbox', 'workbox-'],
+            'Service Worker': ['service-worker', 'navigator.serviceWorker'],
+            'PWA Builder': ['pwa-builder', '@pwa'],
+            'Lighthouse PWA': ['lighthouse', 'pwa'],
+        },
+        'internationalization': {
+            'i18next': ['i18next', '@i18next'],
+            'FormatJS': ['formatjs', '@formatjs'],
+            'Vue I18n': ['vue-i18n', '@vue-i18n'],
+            'React Intl': ['react-intl', '@formatjs/react'],
+            'Angular I18n': ['@angular/common', 'i18n'],
+            'Polyglot': ['polyglot', 'polyglot-'],
+            'Globalize': ['globalize', 'globalize-'],
+        },
+        'accessibility': {
+            'axe-core': ['axe', 'axe-core'],
+            'Pa11y': ['pa11y', 'pa11y-'],
+            'WAVE': ['wave', 'wave-'],
+            'Lighthouse Accessibility': ['lighthouse', 'accessibility'],
+        },
+        'seo': {
+            'Yoast SEO': ['yoast', 'yoast-seo'],
+            'All in One SEO': ['aioseo', 'all-in-one-seo'],
+            'Rank Math': ['rank-math', 'rankmath'],
+            'Schema.org': ['schema.org', 'application/ld+json'],
+            'Open Graph': ['og:', 'og:title'],
+            'Twitter Cards': ['twitter:card', 'twitter:title'],
+        },
+        'email': {
+            'SendGrid': ['sendgrid', '@sendgrid'],
+            'Mailgun': ['mailgun', 'mailgun-'],
+            'Postmark': ['postmark', 'postmark-'],
+            'Amazon SES': ['ses', 'amazon-ses'],
+            'SparkPost': ['sparkpost', 'sparkpost-'],
+            'Mailchimp': ['mailchimp', 'mc.js'],
+        },
+        'file_upload': {
+            'Dropzone': ['dropzone', 'dropzone.min'],
+            'Fine Uploader': ['fine-uploader', 'fineuploader'],
+            'Uppy': ['uppy', '@uppy'],
+            'FilePond': ['filepond', 'filepond-'],
+            'jQuery File Upload': ['fileupload', 'blueimp'],
+        },
+        'rich_text_editors': {
+            'TinyMCE': ['tinymce', 'tinymce-'],
+            'CKEditor': ['ckeditor', 'ckeditor-'],
+            'Quill': ['quill', 'quill-'],
+            'Draft.js': ['draft.js', '@draft-js'],
+            'Slate': ['slate', '@slate-js'],
+            'Trix': ['trix', 'trix-'],
+            'Froala': ['froala', 'froala-'],
+            'Summernote': ['summernote', 'summernote-'],
+        },
     }
     
     VERSION_PATTERNS = {
@@ -3528,9 +3787,392 @@ class TechnologyStackFingerprinter:
     def __init__(self):
         self.detected_technologies = {}
         self.detected_versions = {}
+        self.confidence_scores = {}  # Confidence score for each detected technology
+        self.detection_methods = {}  # Which method detected each technology
+        self.cookies = {}  # Detected cookies
+        self.script_sources = []  # All script sources found
+        self.css_classes = set()  # All CSS classes found
+        self.data_attributes = set()  # All data attributes found
+        self.security_headers = {}  # Security headers detected
+        self.ssl_info = {}  # SSL/TLS information
+    
+    def _extract_cookies(self, headers: Dict) -> Dict:
+        """Extract and analyze cookies from headers."""
+        cookies = {}
+        set_cookie = headers.get('Set-Cookie', '')
+        if set_cookie:
+            if isinstance(set_cookie, str):
+                cookie_parts = set_cookie.split(';')
+                for part in cookie_parts:
+                    if '=' in part:
+                        name, value = part.split('=', 1)
+                        cookies[name.strip()] = value.strip()
+            elif isinstance(set_cookie, list):
+                for cookie in set_cookie:
+                    cookie_parts = cookie.split(';')
+                    for part in cookie_parts:
+                        if '=' in part:
+                            name, value = part.split('=', 1)
+                            cookies[name.strip()] = value.strip()
+        return cookies
+    
+    def _extract_script_sources(self, html_content: str) -> List[str]:
+        """Extract all script source URLs from HTML."""
+        import re
+        script_pattern = r'<script[^>]*src=["\']([^"\']+)["\']'
+        return re.findall(script_pattern, html_content, re.IGNORECASE)
+    
+    def _extract_css_classes(self, html_content: str) -> Set[str]:
+        """Extract all CSS class names from HTML."""
+        import re
+        class_pattern = r'class=["\']([^"\']+)["\']'
+        classes = set()
+        matches = re.findall(class_pattern, html_content, re.IGNORECASE)
+        for match in matches:
+            classes.update(match.split())
+        return classes
+    
+    def _extract_data_attributes(self, html_content: str) -> Set[str]:
+        """Extract all data attributes from HTML."""
+        import re
+        data_pattern = r'data-[^=]+=["\']?[^"\']*["\']?'
+        attributes = set()
+        matches = re.findall(data_pattern, html_content, re.IGNORECASE)
+        for match in matches:
+            attr_name = match.split('=')[0].strip()
+            attributes.add(attr_name)
+        return attributes
+    
+    def _analyze_security_headers(self, headers: Dict) -> Dict:
+        """Analyze security headers for technology clues and security posture."""
+        security_info = {}
+        
+        security_headers = {
+            'Strict-Transport-Security': 'HSTS',
+            'Content-Security-Policy': 'CSP',
+            'X-Frame-Options': 'Clickjacking Protection',
+            'X-Content-Type-Options': 'MIME Sniffing Protection',
+            'X-XSS-Protection': 'XSS Filter',
+            'Referrer-Policy': 'Referrer Control',
+            'Permissions-Policy': 'Feature Policy',
+            'Cross-Origin-Opener-Policy': 'COOP',
+            'Cross-Origin-Resource-Policy': 'CORP',
+            'Cross-Origin-Embedder-Policy': 'COEP',
+        }
+        
+        for header, description in security_headers.items():
+            if header in headers:
+                security_info[header] = {
+                    'value': headers[header],
+                    'description': description
+                }
+        
+        # SSL/TLS information from headers
+        if 'Strict-Transport-Security' in headers:
+            self.ssl_info['hsts_enabled'] = True
+            self.ssl_info['hsts_max_age'] = headers['Strict-Transport-Security']
+        
+        return security_info
+    
+    def _infer_technology_stack(self) -> Dict:
+        """Infer technology stack relationships and dependencies."""
+        inferences = {}
+        
+        # Framework-specific inferences
+        if 'React' in self.confidence_scores:
+            if 'Redux' in self.confidence_scores:
+                inferences['React + Redux'] = 'React application with Redux state management'
+            if 'Next.js' in self.confidence_scores:
+                inferences['Next.js + React'] = 'Next.js framework using React'
+        
+        if 'Vue.js' in self.confidence_scores:
+            if 'Vuex' in self.confidence_scores:
+                inferences['Vue + Vuex'] = 'Vue.js application with Vuex state management'
+            if 'Nuxt.js' in self.confidence_scores:
+                inferences['Nuxt + Vue'] = 'Nuxt.js framework using Vue.js'
+        
+        if 'Angular' in self.confidence_scores:
+            if 'NgRx' in self.confidence_scores:
+                inferences['Angular + NgRx'] = 'Angular application with NgRx state management'
+        
+        # CMS-specific inferences
+        if 'WordPress' in self.confidence_scores:
+            if 'WooCommerce' in self.confidence_scores:
+                inferences['WordPress + WooCommerce'] = 'WordPress with e-commerce via WooCommerce'
+            if 'Elementor' in self.confidence_scores:
+                inferences['WordPress + Elementor'] = 'WordPress with Elementor page builder'
+        
+        # Database inferences from frameworks
+        if 'Django' in self.confidence_scores:
+            inferences['Django Stack'] = 'Likely using PostgreSQL or SQLite (Django defaults)'
+        if 'Rails' in self.confidence_scores:
+            inferences['Rails Stack'] = 'Likely using PostgreSQL or MySQL (Rails defaults)'
+        if 'Laravel' in self.confidence_scores:
+            inferences['Laravel Stack'] = 'Likely using MySQL or PostgreSQL (Laravel defaults)'
+        
+        # JavaScript framework inferences
+        if 'Node.js' in self.confidence_scores:
+            if 'Express.js' in self.confidence_scores:
+                inferences['Node + Express'] = 'Node.js backend with Express framework'
+            if 'MongoDB' in self.confidence_scores:
+                inferences['MEAN/MERN Stack'] = 'Possible MEAN/MERN stack (MongoDB, Express, Angular/React, Node)'
+        
+        # Build tool inferences
+        if 'React' in self.confidence_scores or 'Vue.js' in self.confidence_scores:
+            if 'Webpack' in self.confidence_scores:
+                inferences['Modern Build Stack'] = 'Using Webpack for module bundling'
+            if 'Vite' in self.confidence_scores:
+                inferences['Modern Build Stack'] = 'Using Vite for fast development and building'
+        
+        # UI framework inferences
+        if 'React' in self.confidence_scores:
+            if 'Material UI' in self.confidence_scores:
+                inferences['React + Material UI'] = 'React with Material Design components'
+            if 'Ant Design' in self.confidence_scores:
+                inferences['React + Ant Design'] = 'React with Ant Design component library'
+        
+        if 'Vue.js' in self.confidence_scores:
+            if 'Element UI' in self.confidence_scores:
+                inferences['Vue + Element UI'] = 'Vue.js with Element UI components'
+        
+        # Analytics inferences
+        analytics_count = sum(1 for tech in ['Google Analytics', 'Google Tag Manager', 'Hotjar', 'Mixpanel', 'Segment'] 
+                           if tech in self.confidence_scores)
+        if analytics_count >= 2:
+            inferences['Multi-Analytics'] = f'Using {analytics_count} different analytics/tracking tools'
+        
+        # Security posture inference
+        security_headers_count = len(self.security_headers)
+        if security_headers_count >= 5:
+            inferences['Security Posture'] = 'Strong security posture with multiple security headers'
+        elif security_headers_count >= 2:
+            inferences['Security Posture'] = 'Moderate security posture with some security headers'
+        else:
+            inferences['Security Posture'] = 'Limited security headers detected'
+        
+        return inferences
+    
+    def _detect_from_cookies(self, cookies: Dict) -> Dict:
+        """Detect technologies from cookie patterns."""
+        detected = {}
+        confidence = {}
+        
+        cookie_patterns = {
+            'WordPress': {'wp-settings', 'wordpress_logged_in', 'wp-postpass'},
+            'Drupal': {'Drupal.visitor', 'SSESS'},
+            'Joomla': {'Joomla!'},
+            'Magento': {'frontend', 'admin', 'customer'},
+            'Shopify': {'_shopify_y', '_shopify_s', '_shopify_sa_p'},
+            'Google Analytics': {'_ga', '_gid', '_gat'},
+            'Hotjar': {'_hjid', '_hjDone', '_hjMinimized'},
+            'Mixpanel': {'mp_mixpanel_token'},
+            'Segment': {'ajs_user_id', 'ajs_anonymous_id'},
+            'Amplitude': {'amp'},
+            'Heap': {'_heap'},
+            'FullStory': {'fs_uid'},
+            'Intercom': {'intercom-id'},
+            'Zendesk': {'zendesk_web_widget'},
+            'Cloudflare': {'__cf_bm', 'cf_clearance'},
+            'Varnish': {'X-Varnish'},
+            'AWS': {'aws-'},
+            'Azure': {'.AspNetCore'},
+            'Auth0': {'auth0'},
+            'Okta': {'okta'},
+        }
+        
+        for tech, patterns in cookie_patterns.items():
+            for cookie_name in cookies.keys():
+                for pattern in patterns:
+                    if pattern.lower() in cookie_name.lower():
+                        if tech not in detected:
+                            detected[tech] = []
+                        detected[tech].append(f"Cookie: {cookie_name}")
+                        confidence[tech] = confidence.get(tech, 0) + 0.4
+        
+        return detected, confidence
+    
+    def _detect_from_scripts(self, script_sources: List[str]) -> Dict:
+        """Detect technologies from script source URLs."""
+        detected = {}
+        confidence = {}
+        
+        script_patterns = {
+            'React': {'react', 'react-dom', 'reactjs'},
+            'Vue.js': {'vue', 'vue-router', 'vuex'},
+            'Angular': {'angular', 'angularjs', 'ng-'},
+            'jQuery': {'jquery'},
+            'Bootstrap': {'bootstrap'},
+            'Tailwind CSS': {'tailwind'},
+            'Material UI': {'material-ui', '@mui'},
+            'Ant Design': {'antd', 'ant-design'},
+            'Chart.js': {'chart.js', 'chartjs'},
+            'D3.js': {'d3', 'd3.js'},
+            'Three.js': {'three', 'three.js'},
+            'Moment.js': {'moment'},
+            'Lodash': {'lodash'},
+            'Axios': {'axios'},
+            'Socket.io': {'socket.io'},
+            'Font Awesome': {'font-awesome', 'fontawesome'},
+            'Google Analytics': {'google-analytics', 'gtag', 'analytics.js'},
+            'Google Tag Manager': {'googletagmanager'},
+            'Hotjar': {'hotjar'},
+            'Mixpanel': {'mixpanel'},
+            'Segment': {'segment'},
+            'Amplitude': {'amplitude'},
+            'Heap': {'heapanalytics'},
+            'FullStory': {'fullstory'},
+            'Sentry': {'sentry'},
+            'Datadog': {'datadog'},
+            'New Relic': {'newrelic'},
+            'Intercom': {'intercom'},
+            'Drift': {'drift'},
+            'Zendesk': {'zendesk'},
+            'Stripe': {'stripe', 'js.stripe'},
+            'PayPal': {'paypal'},
+            'Mapbox': {'mapbox'},
+            'Leaflet': {'leaflet'},
+            'YouTube': {'youtube'},
+            'Vimeo': {'vimeo'},
+            'Facebook': {'facebook', 'fb-'},
+            'Twitter': {'twitter', 'x.com'},
+            'LinkedIn': {'linkedin'},
+        }
+        
+        for script in script_sources:
+            script_lower = script.lower()
+            for tech, patterns in script_patterns.items():
+                for pattern in patterns:
+                    if pattern in script_lower:
+                        if tech not in detected:
+                            detected[tech] = []
+                        detected[tech].append(f"Script: {script}")
+                        confidence[tech] = confidence.get(tech, 0) + 0.5
+        
+        return detected, confidence
+    
+    def _detect_from_css_classes(self, css_classes: Set[str]) -> Dict:
+        """Detect technologies from CSS class names."""
+        detected = {}
+        confidence = {}
+        
+        class_patterns = {
+            'Bootstrap': {'btn', 'container', 'row', 'col', 'navbar', 'card', 'alert', 'modal'},
+            'Tailwind CSS': {'flex', 'grid', 'text-', 'bg-', 'p-', 'm-', 'w-', 'h-', 'rounded'},
+            'Material UI': {'Mui', 'makeStyles', 'MuiButton', 'MuiCard'},
+            'Ant Design': {'ant-', 'ant-btn', 'ant-card', 'ant-layout'},
+            'Bulma': {'button', 'container', 'columns', 'column', 'navbar', 'card'},
+            'Foundation': {'button', 'grid-x', 'cell', 'top-bar'},
+            'Semantic UI': {'ui', 'button', 'container', 'segment', 'card'},
+            'UI Kit': {'uk-', 'uk-button', 'uk-card'},
+            'WordPress': {'wp-', 'widget', 'menu-item'},
+            'Drupal': {'field-', 'node-', 'views-'},
+            'Joomla': {'item-', 'category-'},
+        }
+        
+        for css_class in css_classes:
+            for tech, patterns in class_patterns.items():
+                for pattern in patterns:
+                    if pattern in css_class.lower():
+                        if tech not in detected:
+                            detected[tech] = []
+                        detected[tech].append(f"Class: {css_class}")
+                        confidence[tech] = confidence.get(tech, 0) + 0.3
+        
+        return detected, confidence
+    
+    def _detect_from_data_attributes(self, data_attributes: Set[str]) -> Dict:
+        """Detect technologies from data attributes."""
+        detected = {}
+        confidence = {}
+        
+        data_patterns = {
+            'Vue.js': {'data-v-', 'v-if', 'v-for', 'v-bind'},
+            'Angular': {'ng-', 'data-ng-'},
+            'React': {'data-reactid', 'data-reactroot'},
+            'Alpine.js': {'x-data', 'x-if', 'x-for'},
+            'HTMX': {'hx-', 'data-hx-'},
+            'Turbo': {'data-turbo'},
+            'Stimulus': {'data-controller', 'data-action'},
+            'WordPress': {'data-wp-'},
+            'Google Analytics': {'data-ga'},
+        }
+        
+        for attr in data_attributes:
+            for tech, patterns in data_patterns.items():
+                for pattern in patterns:
+                    if pattern in attr.lower():
+                        if tech not in detected:
+                            detected[tech] = []
+                        detected[tech].append(f"Attribute: {attr}")
+                        confidence[tech] = confidence.get(tech, 0) + 0.4
+        
+        return detected, confidence
+    
+    def _analyze_comprehensive_headers(self, headers: Dict) -> Dict:
+        """Comprehensive analysis of HTTP headers for technology detection."""
+        detected = {}
+        confidence = {}
+        
+        # Analyze various headers
+        header_patterns = {
+            'X-Powered-By': {
+                'PHP': {'php'},
+                'Express': {'express'},
+                'ASP.NET': {'asp.net', '.net'},
+                'Python': {'python', 'wsgi'},
+                'Node.js': {'node'},
+                'Rails': {'rails', 'ruby'},
+                'Django': {'django'},
+                'Laravel': {'laravel'},
+            },
+            'Server': {
+                'Apache': {'apache'},
+                'Nginx': {'nginx'},
+                'IIS': {'iis', 'microsoft-iis'},
+                'Cloudflare': {'cloudflare'},
+                'LiteSpeed': {'litespeed'},
+                'Caddy': {'caddy'},
+                'Gunicorn': {'gunicorn'},
+                'uWSGI': {'uwsgi'},
+                'Passenger': {'passenger'},
+            },
+            'X-AspNet-Version': {
+                'ASP.NET': {'.net'},
+            },
+            'X-AspNetMvc-Version': {
+                'ASP.NET MVC': {'mvc'},
+            },
+            'X-Pingback': {
+                'WordPress': {'xmlrpc.php'},
+            },
+            'X-Drupal-Cache': {
+                'Drupal': {'drupal'},
+            },
+            'X-Generator': {
+                'Drupal': {'drupal'},
+                'WordPress': {'wordpress'},
+                'Joomla': {'joomla'},
+                'Ghost': {'ghost'},
+                'HubSpot': {'hubspot'},
+            },
+        }
+        
+        for header_name, techs in header_patterns.items():
+            header_value = headers.get(header_name, '')
+            if header_value:
+                header_lower = header_value.lower()
+                for tech, patterns in techs.items():
+                    for pattern in patterns:
+                        if pattern in header_lower:
+                            if tech not in detected:
+                                detected[tech] = []
+                            detected[tech].append(f"Header: {header_name}")
+                            confidence[tech] = confidence.get(tech, 0) + 0.7
+        
+        return detected, confidence
     
     def detect_version(self, tech: str, html_content: str, headers: Dict) -> Optional[str]:
-        """Detect version of a technology using regex patterns."""
+        """Enhanced version detection with multiple extraction methods."""
         if tech not in self.VERSION_PATTERNS:
             return None
         
@@ -3555,93 +4197,230 @@ class TechnologyStackFingerprinter:
             except Exception:
                 continue
         
+        # Try to extract from meta generator tag
+        try:
+            import re
+            generator_match = re.search(r'<meta\s+name=["\']generator["\']\s+content=["\'][^"\']*' + tech.lower() + r'[^"\']*(\d+\.\d+\.?\d*)[^"\']*["\']', html_content, re.IGNORECASE)
+            if generator_match:
+                return generator_match.group(1)
+        except Exception:
+            pass
+        
         return None
     
     def fingerprint(self, url: str, html_content: str, headers: Dict) -> Dict:
-        """Fingerprint technology stack from URL, HTML, and headers with version detection."""
+        """Advanced fingerprinting with multiple detection methods and confidence scoring."""
         # Initialize results for all categories
         results = {category: [] for category in self.TECHNOLOGY_SIGNATURES.keys()}
         self.detected_versions = {}
+        self.confidence_scores = {}
+        self.detection_methods = {}
         
-        # Check headers for web servers
-        server_header = headers.get('Server', '').lower()
-        for tech, signatures in self.TECHNOLOGY_SIGNATURES['web_servers'].items():
-            for sig in signatures:
-                if sig.lower() in server_header:
-                    if tech not in results['web_servers']:
-                        results['web_servers'].append(tech)
-                        # Try to detect version
-                        version = self.detect_version(tech, html_content, headers)
-                        if version:
-                            self.detected_versions[tech] = version
+        # Extract additional data sources
+        self.cookies = self._extract_cookies(headers)
+        self.script_sources = self._extract_script_sources(html_content)
+        self.css_classes = self._extract_css_classes(html_content)
+        self.data_attributes = self._extract_data_attributes(html_content)
+        self.security_headers = self._analyze_security_headers(headers)
         
-        # Check HTML content for all categories except web_servers
+        # Collect all detections from different methods
+        all_detections = {}
+        all_confidence = {}
+        
+        # Detect from cookies
+        cookie_detections, cookie_confidence = self._detect_from_cookies(self.cookies)
+        for tech, methods in cookie_detections.items():
+            if tech not in all_detections:
+                all_detections[tech] = []
+            all_detections[tech].extend(methods)
+            all_confidence[tech] = all_confidence.get(tech, 0) + cookie_confidence[tech]
+            self.detection_methods[tech] = self.detection_methods.get(tech, []) + ['cookie']
+        
+        # Detect from scripts
+        script_detections, script_confidence = self._detect_from_scripts(self.script_sources)
+        for tech, methods in script_detections.items():
+            if tech not in all_detections:
+                all_detections[tech] = []
+            all_detections[tech].extend(methods)
+            all_confidence[tech] = all_confidence.get(tech, 0) + script_confidence[tech]
+            self.detection_methods[tech] = self.detection_methods.get(tech, []) + ['script']
+        
+        # Detect from CSS classes
+        css_detections, css_confidence = self._detect_from_css_classes(self.css_classes)
+        for tech, methods in css_detections.items():
+            if tech not in all_detections:
+                all_detections[tech] = []
+            all_detections[tech].extend(methods)
+            all_confidence[tech] = all_confidence.get(tech, 0) + css_confidence[tech]
+            self.detection_methods[tech] = self.detection_methods.get(tech, []) + ['css_class']
+        
+        # Detect from data attributes
+        data_detections, data_confidence = self._detect_from_data_attributes(self.data_attributes)
+        for tech, methods in data_detections.items():
+            if tech not in all_detections:
+                all_detections[tech] = []
+            all_detections[tech].extend(methods)
+            all_confidence[tech] = all_confidence.get(tech, 0) + data_confidence[tech]
+            self.detection_methods[tech] = self.detection_methods.get(tech, []) + ['data_attribute']
+        
+        # Detect from comprehensive headers
+        header_detections, header_confidence = self._analyze_comprehensive_headers(headers)
+        for tech, methods in header_detections.items():
+            if tech not in all_detections:
+                all_detections[tech] = []
+            all_detections[tech].extend(methods)
+            all_confidence[tech] = all_confidence.get(tech, 0) + header_confidence[tech]
+            self.detection_methods[tech] = self.detection_methods.get(tech, []) + ['header']
+        
+        # Traditional HTML content detection (with confidence scoring)
         html_lower = html_content.lower()
-        
         for category, technologies in self.TECHNOLOGY_SIGNATURES.items():
-            if category == 'web_servers':
-                continue  # Already checked in headers
-            
             for tech, signatures in technologies.items():
+                match_count = 0
                 for sig in signatures:
                     if sig.lower() in html_lower:
-                        if tech not in results[category]:
-                            results[category].append(tech)
-                            # Try to detect version
-                            version = self.detect_version(tech, html_content, headers)
-                            if version:
-                                self.detected_versions[tech] = version
+                        match_count += 1
+                
+                if match_count > 0:
+                    if tech not in all_detections:
+                        all_detections[tech] = []
+                    all_detections[tech].append(f"HTML content ({match_count} matches)")
+                    confidence_boost = min(0.3 * match_count, 0.9)
+                    all_confidence[tech] = all_confidence.get(tech, 0) + confidence_boost
+                    self.detection_methods[tech] = self.detection_methods.get(tech, []) + ['html_content']
         
-        # Check URL patterns for CMS
+        # URL pattern detection
         url_lower = url.lower()
         for tech, signatures in self.TECHNOLOGY_SIGNATURES['cms'].items():
             for sig in signatures:
                 if sig.lower() in url_lower:
-                    if tech not in results['cms']:
-                        results['cms'].append(tech)
-                        # Try to detect version
-                        version = self.detect_version(tech, html_content, headers)
-                        if version:
-                            self.detected_versions[tech] = version
+                    if tech not in all_detections:
+                        all_detections[tech] = []
+                    all_detections[tech].append(f"URL pattern: {sig}")
+                    all_confidence[tech] = all_confidence.get(tech, 0) + 0.6
+                    self.detection_methods[tech] = self.detection_methods.get(tech, []) + ['url']
         
-        # Check meta tags for generator information
+        # Meta generator detection
         try:
             import re
             generator_match = re.search(r'<meta\s+name=["\']generator["\']\s+content=["\']([^"\']+)["\']', html_content, re.IGNORECASE)
             if generator_match:
                 generator_content = generator_match.group(1).lower()
-                # Check if generator matches any CMS
                 for tech in self.TECHNOLOGY_SIGNATURES['cms'].keys():
                     if tech.lower() in generator_content:
-                        if tech not in results['cms']:
-                            results['cms'].append(tech)
-                        # Extract version from generator if available
+                        if tech not in all_detections:
+                            all_detections[tech] = []
+                        all_detections[tech].append("Meta generator tag")
+                        all_confidence[tech] = all_confidence.get(tech, 0) + 0.8
+                        self.detection_methods[tech] = self.detection_methods.get(tech, []) + ['meta_generator']
+                        # Extract version from generator
                         version_match = re.search(r'(\d+\.\d+\.?\d*)', generator_content)
                         if version_match:
                             self.detected_versions[tech] = version_match.group(1)
         except Exception:
             pass
         
+        # Normalize confidence scores and categorize technologies
+        for tech, confidence in all_confidence.items():
+            # Cap confidence at 1.0
+            normalized_confidence = min(confidence, 1.0)
+            self.confidence_scores[tech] = normalized_confidence
+            
+            # Only include technologies with confidence above threshold
+            if normalized_confidence >= self.CONFIDENCE_LOW:
+                # Find appropriate category
+                for category, technologies in self.TECHNOLOGY_SIGNATURES.items():
+                    if tech in technologies:
+                        if tech not in results[category]:
+                            results[category].append(tech)
+                        # Try to detect version
+                        if tech not in self.detected_versions:
+                            version = self.detect_version(tech, html_content, headers)
+                            if version:
+                                self.detected_versions[tech] = version
+                        break
+        
         self.detected_technologies = results
         return results
     
     def generate_report(self) -> str:
-        """Generate a human-readable report with version information."""
+        """Generate a comprehensive human-readable report with confidence scores and detection methods."""
         if not self.detected_technologies:
             return "No technologies detected."
         
         report = "Technology Stack Detection Report\n"
-        report += "=" * 40 + "\n\n"
+        report += "=" * 50 + "\n\n"
         
+        # Technology stack inferences
+        inferences = self._infer_technology_stack()
+        if inferences:
+            report += "Technology Stack Inferences:\n"
+            report += "-" * 40 + "\n"
+            for inference, description in inferences.items():
+                report += f"  • {inference}: {description}\n"
+            report += "\n"
+        
+        # Detected technologies by category with confidence
         for category, technologies in self.detected_technologies.items():
             if technologies:
                 report += f"{category.replace('_', ' ').title()}:\n"
-                for tech in technologies:
-                    if tech in self.detected_versions:
-                        report += f"  - {tech} (Version: {self.detected_versions[tech]})\n"
-                    else:
-                        report += f"  - {tech}\n"
-                report += "\n"
+                report += "-" * 40 + "\n"
+                
+                # Sort by confidence score
+                sorted_techs = sorted(technologies, 
+                                    key=lambda x: self.confidence_scores.get(x, 0), 
+                                    reverse=True)
+                
+                for tech in sorted_techs:
+                    confidence = self.confidence_scores.get(tech, 0)
+                    confidence_percent = int(confidence * 100)
+                    confidence_level = "HIGH" if confidence >= self.CONFIDENCE_HIGH else \
+                                      "MEDIUM" if confidence >= self.CONFIDENCE_MEDIUM else "LOW"
+                    
+                    version = self.detected_versions.get(tech, "Unknown")
+                    methods = self.detection_methods.get(tech, [])
+                    methods_str = ", ".join(set(methods)) if methods else "N/A"
+                    
+                    report += f"  • {tech}\n"
+                    report += f"    Version: {version}\n"
+                    report += f"    Confidence: {confidence_percent}% ({confidence_level})\n"
+                    report += f"    Detected via: {methods_str}\n"
+                    report += "\n"
+        
+        # Security headers analysis
+        if self.security_headers:
+            report += "Security Headers:\n"
+            report += "-" * 40 + "\n"
+            for header, info in self.security_headers.items():
+                report += f"  • {header} ({info['description']})\n"
+                report += f"    Value: {info['value'][:100]}{'...' if len(info['value']) > 100 else ''}\n"
+            report += "\n"
+        
+        # SSL/TLS information
+        if self.ssl_info:
+            report += "SSL/TLS Information:\n"
+            report += "-" * 40 + "\n"
+            for key, value in self.ssl_info.items():
+                report += f"  • {key}: {value}\n"
+            report += "\n"
+        
+        # Detection statistics
+        total_techs = sum(len(techs) for techs in self.detected_technologies.values())
+        high_confidence = sum(1 for tech, conf in self.confidence_scores.items() 
+                            if conf >= self.CONFIDENCE_HIGH)
+        medium_confidence = sum(1 for tech, conf in self.confidence_scores.items() 
+                               if self.CONFIDENCE_MEDIUM <= conf < self.CONFIDENCE_HIGH)
+        
+        report += "Detection Statistics:\n"
+        report += "-" * 40 + "\n"
+        report += f"  • Total technologies detected: {total_techs}\n"
+        report += f"  • High confidence detections: {high_confidence}\n"
+        report += f"  • Medium confidence detections: {medium_confidence}\n"
+        report += f"  • Security headers found: {len(self.security_headers)}\n"
+        report += f"  • Cookies analyzed: {len(self.cookies)}\n"
+        report += f"  • Scripts analyzed: {len(self.script_sources)}\n"
+        report += f"  • CSS classes found: {len(self.css_classes)}\n"
+        report += f"  • Data attributes found: {len(self.data_attributes)}\n"
         
         return report
 
