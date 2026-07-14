@@ -18,6 +18,9 @@ from lxml import html as lxml_html
 import hashlib
 import time
 import warnings
+import logging
+import os
+import secrets
 
 # Suppress BeautifulSoup XML parsing warning
 warnings.filterwarnings('ignore', message='.*parsing an XML document using an HTML parser.*')
@@ -29,6 +32,98 @@ import subprocess
 import threading
 from dataclasses import dataclass
 from urllib.parse import quote
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('recontool.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class ConfigManager:
+    """Manage persistent configuration storage."""
+    
+    CONFIG_FILE = 'recontool_config.json'
+    DEFAULT_CONFIG = {
+        'encryption_salt': None,
+        'max_threads': 10,
+        'allow_localhost': False,
+        'allow_private_ips': False,
+        'allowed_schemes': ['http', 'https'],
+        'api_keys': {},
+        'user_preferences': {
+            'default_search_engine': 'google',
+            'default_num_results': 10,
+            'use_async_crawling': True,
+            'respect_robots_txt': True
+        }
+    }
+    
+    def __init__(self):
+        self.config = self._load_config()
+    
+    def _load_config(self) -> Dict:
+        """Load configuration from file or create default."""
+        if os.path.exists(self.CONFIG_FILE):
+            try:
+                with open(self.CONFIG_FILE, 'r') as f:
+                    loaded_config = json.load(f)
+                # Merge with defaults to ensure all keys exist
+                config = self.DEFAULT_CONFIG.copy()
+                config.update(loaded_config)
+                return config
+            except Exception as e:
+                logger.error(f"Failed to load config file: {e}")
+                return self.DEFAULT_CONFIG.copy()
+        else:
+            # Generate random salt for new installation
+            config = self.DEFAULT_CONFIG.copy()
+            config['encryption_salt'] = secrets.token_hex(32)
+            self._save_config(config)
+            return config
+    
+    def _save_config(self, config: Dict):
+        """Save configuration to file."""
+        try:
+            with open(self.CONFIG_FILE, 'w') as f:
+                json.dump(config, f, indent=2)
+            logger.info("Configuration saved successfully")
+        except Exception as e:
+            logger.error(f"Failed to save config file: {e}")
+    
+    def get(self, key: str, default=None):
+        """Get configuration value."""
+        keys = key.split('.')
+        value = self.config
+        for k in keys:
+            if isinstance(value, dict) and k in value:
+                value = value[k]
+            else:
+                return default
+        return value
+    
+    def set(self, key: str, value):
+        """Set configuration value and save."""
+        keys = key.split('.')
+        config = self.config
+        for k in keys[:-1]:
+            if k not in config:
+                config[k] = {}
+            config = config[k]
+        config[keys[-1]] = value
+        self._save_config(self.config)
+    
+    def get_encryption_salt(self) -> str:
+        """Get the encryption salt, generating one if needed."""
+        salt = self.get('encryption_salt')
+        if not salt:
+            salt = secrets.token_hex(32)
+            self.set('encryption_salt', salt)
+        return salt
 try:
     from simhash import Simhash
 except ImportError:
@@ -169,29 +264,32 @@ import sys
 class APIKeyManager:
     """Secure API key storage and encryption."""
     
-    def __init__(self):
+    def __init__(self, config_manager: ConfigManager):
         self._fernet = None
+        self.config_manager = config_manager
         self._init_encryption()
     
     def _init_encryption(self):
-        """Initialize encryption with a key derived from machine-specific data."""
+        """Initialize encryption with a key derived from machine-specific data and secure salt."""
         if Fernet is None:
-            print("Warning: cryptography library not available. API keys will be stored in plain text.")
+            logger.warning("Cryptography library not available. API keys will be stored in plain text.")
             return
         
         try:
-            # Derive a key from machine-specific data (in production, use proper key management)
+            # Derive a key from machine-specific data and secure salt from config
             machine_id = os.environ.get('COMPUTERNAME', 'default') + os.environ.get('USERNAME', 'default')
+            salt = self.config_manager.get_encryption_salt().encode()
             kdf = PBKDF2HMAC(
                 algorithm=hashes.SHA256(),
                 length=32,
-                salt=b'recon_tool_salt',  # In production, use random salt stored securely
+                salt=salt,
                 iterations=100000,
             )
             key = base64.urlsafe_b64encode(kdf.derive(machine_id.encode()))
             self._fernet = Fernet(key)
+            logger.info("Encryption initialized successfully")
         except Exception as e:
-            print(f"Warning: Failed to initialize encryption: {e}")
+            logger.error(f"Failed to initialize encryption: {e}")
     
     def encrypt_key(self, api_key: str) -> str:
         """Encrypt an API key."""
@@ -200,7 +298,7 @@ class APIKeyManager:
         try:
             return self._fernet.encrypt(api_key.encode()).decode()
         except Exception as e:
-            print(f"Encryption failed: {e}")
+            logger.error(f"Encryption failed: {e}")
             return api_key
     
     def decrypt_key(self, encrypted_key: str) -> str:
@@ -210,14 +308,16 @@ class APIKeyManager:
         try:
             return self._fernet.decrypt(encrypted_key.encode()).decode()
         except Exception as e:
-            print(f"Decryption failed: {e}")
+            logger.error(f"Decryption failed: {e}")
             return encrypted_key
 
 class InputValidator:
     """Strict input validation for URLs, IPs, ports, and other user inputs."""
     
-    @staticmethod
-    def validate_url(url: str) -> tuple[bool, str]:
+    def __init__(self, config_manager: ConfigManager):
+        self.config_manager = config_manager
+    
+    def validate_url(self, url: str) -> tuple[bool, str]:
         """Validate URL format and scheme."""
         if not url or not url.strip():
             return False, "URL cannot be empty"
@@ -227,13 +327,28 @@ class InputValidator:
         try:
             parsed = urlparse(url)
             
-            # Check scheme
-            if parsed.scheme not in ['http', 'https']:
-                return False, "URL must use http or https scheme"
+            # Check scheme against whitelist
+            allowed_schemes = self.config_manager.get('allowed_schemes', ['http', 'https'])
+            if parsed.scheme not in allowed_schemes:
+                return False, f"URL must use one of these schemes: {', '.join(allowed_schemes)}"
             
             # Check netloc (domain/IP)
             if not parsed.netloc:
                 return False, "URL must contain a valid domain or IP address"
+            
+            # Check for localhost/private IPs if not allowed
+            if not self.config_manager.get('allow_localhost', False):
+                if parsed.hostname in ['localhost', '127.0.0.1', '::1']:
+                    return False, "localhost is not allowed unless explicitly enabled in settings"
+            
+            if not self.config_manager.get('allow_private_ips', False):
+                try:
+                    if ipaddress:
+                        ip_obj = ipaddress.ip_address(parsed.hostname)
+                        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+                            return False, "Private IP addresses are not allowed unless explicitly enabled in settings"
+                except ValueError:
+                    pass  # Not an IP address, continue validation
             
             # Check for suspicious patterns (potential injection)
             dangerous_patterns = ['<script', 'javascript:', 'data:', 'vbscript:', 'onload=', 'onerror=']
@@ -243,10 +358,10 @@ class InputValidator:
             
             return True, "Valid URL"
         except Exception as e:
+            logger.error(f"URL validation error: {e}")
             return False, f"Invalid URL format: {str(e)}"
     
-    @staticmethod
-    def validate_ip(ip: str) -> tuple[bool, str]:
+    def validate_ip(self, ip: str) -> tuple[bool, str]:
         """Validate IP address format."""
         if not ip or not ip.strip():
             return False, "IP address cannot be empty"
@@ -257,17 +372,22 @@ class InputValidator:
             if ipaddress is None:
                 return True, "IP validation not available (ipaddress module missing)"
             
-            ipaddress.ip_address(ip)
+            ip_obj = ipaddress.ip_address(ip)
             
-            # Check for localhost/private ranges if needed
-            # ip_obj = ipaddress.ip_address(ip)
-            # if ip_obj.is_private:
-            #     return True, "Valid private IP"
+            # Check for localhost/private IPs if not allowed
+            if not self.config_manager.get('allow_localhost', False):
+                if ip_obj.is_loopback:
+                    return False, "localhost is not allowed unless explicitly enabled in settings"
+            
+            if not self.config_manager.get('allow_private_ips', False):
+                if ip_obj.is_private or ip_obj.is_link_local:
+                    return False, "Private IP addresses are not allowed unless explicitly enabled in settings"
             
             return True, "Valid IP address"
         except ValueError:
             return False, "Invalid IP address format"
         except Exception as e:
+            logger.error(f"IP validation error: {e}")
             return False, f"IP validation error: {str(e)}"
     
     @staticmethod
@@ -347,31 +467,47 @@ class ThreadPoolManager:
     _instance = None
     _mutex = QMutex()
     
-    def __new__(cls):
+    def __init__(self, config_manager: ConfigManager):
+        self.config_manager = config_manager
+        self._active_threads = []
+        self._max_threads = self.config_manager.get('max_threads', 10)
+    
+    @classmethod
+    def get_instance(cls, config_manager: ConfigManager):
+        """Get singleton instance with config manager."""
         with QMutexLocker(cls._mutex):
             if cls._instance is None:
-                cls._instance = super().__new__(cls)
-                cls._instance._active_threads = []
-                cls._instance._max_threads = 10  # Maximum concurrent threads
-        return cls._instance
+                cls._instance = cls(config_manager)
+            return cls._instance
     
-    def can_start_thread(self) -> bool:
-        """Check if a new thread can be started."""
+    def can_start_thread(self) -> tuple[bool, str]:
+        """Check if a new thread can be started. Returns (can_start, message)."""
         with QMutexLocker(self._mutex):
             # Count active threads
             active_count = sum(1 for t in self._active_threads if t.isRunning())
-            return active_count < self._max_threads
+            
+            # Warning threshold at 80% capacity
+            warning_threshold = int(self._max_threads * 0.8)
+            if active_count >= warning_threshold:
+                logger.warning(f"Thread pool approaching limit: {active_count}/{self._max_threads} active threads")
+            
+            if active_count >= self._max_threads:
+                return False, f"Maximum thread limit reached ({self._max_threads}). Please wait for current operations to complete."
+            
+            return True, ""
     
     def register_thread(self, thread: QThread):
         """Register a new thread."""
         with QMutexLocker(self._mutex):
             self._active_threads.append(thread)
+            logger.debug(f"Thread registered. Active threads: {self.get_active_count()}")
     
     def unregister_thread(self, thread: QThread):
         """Unregister a thread."""
         with QMutexLocker(self._mutex):
             if thread in self._active_threads:
                 self._active_threads.remove(thread)
+                logger.debug(f"Thread unregistered. Active threads: {self.get_active_count()}")
     
     def get_active_count(self) -> int:
         """Get count of active threads."""
@@ -379,9 +515,15 @@ class ThreadPoolManager:
             return sum(1 for t in self._active_threads if t.isRunning())
     
     def set_max_threads(self, max_threads: int):
-        """Set maximum number of concurrent threads."""
+        """Set maximum number of concurrent threads and save to config."""
         with QMutexLocker(self._mutex):
-            self._max_threads = max(1, min(50, max_threads))  # Limit between 1 and 50
+            self._max_threads = max(1, min(100, max_threads))  # Limit between 1 and 100
+            self.config_manager.set('max_threads', self._max_threads)
+            logger.info(f"Max threads set to {self._max_threads}")
+    
+    def get_max_threads(self) -> int:
+        """Get maximum number of concurrent threads."""
+        return self._max_threads
 
 class CancellableOperation:
     """Base class for cancellable operations."""
@@ -865,7 +1007,8 @@ class Crawler(CancellableOperation):
         """Extract domain from URL."""
         try:
             return urlparse(url).netloc
-        except:
+        except Exception as e:
+            logger.error(f"Failed to extract domain from URL {url}: {e}")
             return ''
     
     def _can_fetch(self, url: str) -> bool:
@@ -1089,7 +1232,8 @@ class Crawler(CancellableOperation):
             parsed = urlparse(url)
             base_parsed = urlparse(self.url)
             return parsed.netloc == base_parsed.netloc and parsed.scheme in ['http', 'https']
-        except:
+        except Exception as e:
+            logger.error(f"URL comparison failed: {e}")
             return False
     
     def normalize_url(self, url: str) -> str:
@@ -1441,7 +1585,7 @@ class Crawler(CancellableOperation):
             List of dictionaries containing crawl results
         """
         if self.use_async:
-            # Run async crawl in event loop
+            # Run async crawl in event loop with proper cleanup
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
@@ -1450,7 +1594,18 @@ class Crawler(CancellableOperation):
                 )
                 return results
             finally:
-                loop.close()
+                # Clean up pending tasks
+                try:
+                    pending = asyncio.all_tasks(loop)
+                    for task in pending:
+                        task.cancel()
+                    if pending:
+                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                except Exception as e:
+                    logger.debug(f"Error cleaning up async tasks: {e}")
+                finally:
+                    loop.close()
+                    asyncio.set_event_loop(None)
         else:
             return self.crawl_sync(search_text, search_names, file_extensions, use_regex, progress_callback)
     
@@ -1863,8 +2018,8 @@ class Searcher:
                 try:
                     parsed = urlparse(result['url'])
                     domains.add(parsed.netloc)
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to parse URL for domain extraction: {e}")
         return domains
     
     def get_results(self) -> List[Dict]:
@@ -2305,15 +2460,15 @@ class SubdomainDiscovery:
                 # Try A record
                 self.resolver.resolve(full_domain, 'A')
                 found_subdomains.add(full_domain)
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"DNS A record query failed for {full_domain}: {e}")
             
             try:
                 # Try CNAME record
                 self.resolver.resolve(full_domain, 'CNAME')
                 found_subdomains.add(full_domain)
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"DNS CNAME record query failed for {full_domain}: {e}")
             
             if progress_callback:
                 progress_callback(idx + 1, total, len(found_subdomains))
@@ -2352,8 +2507,9 @@ class SubdomainDiscovery:
                         # Skip certificates not yet valid
                         if nb > now:
                             continue
-                    except:
+                    except Exception as e:
                         # If date parsing fails, skip this entry
+                        logger.debug(f"Certificate date parsing failed: {e}")
                         continue
                 
                 name_value = entry.get('name_value', '')
@@ -2426,7 +2582,8 @@ class TorCrawler:
         try:
             response = self.session.get('https://check.torproject.org', timeout=10)
             return 'Congratulations' in response.text
-        except:
+        except Exception as e:
+            logger.debug(f"Tor connection check failed: {e}")
             return False
 
 class WhoIsSearch:
@@ -2774,8 +2931,8 @@ class NetworkGraphGenerator:
             metrics['pagerank'] = nx.pagerank(self.graph)
             metrics['betweenness'] = nx.betweenness_centrality(self.graph)
             metrics['degree_centrality'] = nx.degree_centrality(self.graph)
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Graph metrics calculation failed: {e}")
         
         return metrics
     
@@ -4692,8 +4849,8 @@ class TemporalAnalyzer:
                 with open(hist_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     history.append(data)
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to load history file {hist_path}: {e}")
         
         return sorted(history, key=lambda x: x.get('timestamp', ''))
 
@@ -4863,8 +5020,8 @@ class IPGeolocation:
                     result['longitude'] = response.location.longitude
                     result['asn'] = response.network
                     result['org'] = response.network
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to extract geolocation data: {e}")
         
         except Exception as e:
             result['error'] = str(e)
@@ -5132,8 +5289,8 @@ class TracerouteAnalyzer:
                                 # Windows might use different constant
                                 try:
                                     sock.setsockopt(0, 4, ttl)  # IP_TTL on Windows
-                                except:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"Failed to set socket option: {e}")
                             
                             start_time = time.time()
                             result = sock.connect_ex((dest_ip, port))
@@ -5179,7 +5336,8 @@ class TracerouteAnalyzer:
                     if results:
                         return results
                         
-                except:
+                except Exception as e:
+                    logger.debug(f"Port scan attempt failed: {e}")
                     continue
             
             return results
@@ -5400,8 +5558,8 @@ class SocialMediaSearcher:
                     client_secret=reddit_client_secret,
                     user_agent='ReconTool/1.0'
                 )
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Reddit API initialization failed: {e}")
         
         if mastodon and mastodon_instance and mastodon_token:
             try:
@@ -5409,8 +5567,8 @@ class SocialMediaSearcher:
                     access_token=mastodon_token,
                     api_base_url=mastodon_instance
                 )
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Mastodon API initialization failed: {e}")
     
     def search_reddit(self, query: str, limit: int = 10) -> List[Dict]:
         """Search Reddit for mentions."""
@@ -5487,7 +5645,8 @@ class SocialMediaSearcher:
                             'score': score,
                             'source': 'web_scrape'
                         })
-                except:
+                except Exception as e:
+                    logger.debug(f"Reddit web scraping failed: {e}")
                     continue
             
             if not results:
@@ -5566,7 +5725,8 @@ class SocialMediaSearcher:
                         'favourites_count': status.get('favourites_count', 0),
                         'source': 'public_api'
                     })
-            except:
+            except Exception as e:
+                logger.debug(f"Mastodon API search failed: {e}")
                 # If API fails, try web scraping fallback
                 web_url = f"https://mastodon.social/search?q={urllib.parse.quote(query)}"
                 response = self.session.get(web_url, headers=headers, timeout=10)
@@ -5594,7 +5754,8 @@ class SocialMediaSearcher:
                             'account': account,
                             'source': 'web_scrape'
                         })
-                    except:
+                    except Exception as e:
+                        logger.debug(f"Mastodon web scraping failed: {e}")
                         continue
             
             if not results:
@@ -5651,10 +5812,10 @@ class DNSAnalyzer:
                 try:
                     ip = self.socket.gethostbyname(domain)
                     result['records']['A'] = [ip]
-                except:
-                    pass
-            except Exception:
-                pass
+                except Exception as e:
+                    logger.debug(f"DNS lookup failed for {domain}: {e}")
+            except Exception as e:
+                logger.debug(f"DNS query failed: {e}")
             
             # MX records
             try:
@@ -5721,7 +5882,8 @@ class DNSAnalyzer:
                 import dns.resolver
                 answers = dns.resolver.resolve(domain, 'DNSKEY')
                 result['dnssec_enabled'] = True
-            except:
+            except Exception as e:
+                logger.debug(f"DNSSEC check failed: {e}")
                 result['dnssec_enabled'] = False
             
             return result
@@ -5759,7 +5921,8 @@ class DNSAnalyzer:
             try:
                 answers = dns.resolver.resolve(domain, 'NS')
                 ns_records = [str(rdata) for rdata in answers]
-            except:
+            except Exception as e:
+                logger.debug(f"NS record query failed: {e}")
                 return {'error': 'Could not get NS records'}
             
             # Try AXFR on each nameserver
@@ -5808,7 +5971,7 @@ class WHOISAnalyzer:
                 import ipaddress
                 ipaddress.ip_address(target)
                 is_ip = True
-            except:
+            except Exception:
                 is_ip = False
             
             if is_ip:
@@ -5853,7 +6016,8 @@ class WHOISAnalyzer:
                             result.update(self._extract_generic_whois_data(soup))
                         
                         return result
-                except:
+                except Exception as e:
+                    logger.debug(f"WHOIS server query failed: {e}")
                     continue
             
             return {
@@ -6017,7 +6181,8 @@ class WHOISAnalyzer:
                             result['timezone'] = data['timezone']
                         
                         return result
-                except:
+                except Exception as e:
+                    logger.debug(f"WHOIS parsing failed: {e}")
                     continue
             
             return {
@@ -6099,8 +6264,8 @@ class BacklinkDiscovery:
                                 'content_type': data[3],
                                 'archive_url': f"https://web.archive.org/web/{data[1]}/{data[0]}"
                             })
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Archive entry parsing failed: {e}")
         
         except Exception as e:
             return [{'error': str(e)}]
@@ -6127,8 +6292,8 @@ class BacklinkDiscovery:
                 
                 ct = bl.get('content_type', 'unknown')
                 content_types[ct] = content_types.get(ct, 0) + 1
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Archive blacklist entry parsing failed: {e}")
         
         return {
             'total_backlinks': len(backlinks),
@@ -6199,8 +6364,8 @@ class PassiveOSINT:
             try:
                 hostname = socket.gethostbyaddr(target)
                 result['hostnames'] = [hostname[0]]
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Reverse DNS lookup failed: {e}")
             
             # Common port scan (non-intrusive)
             common_ports = [21, 22, 23, 25, 53, 80, 443, 445, 3306, 3389, 5432, 8080]
@@ -6212,7 +6377,8 @@ class PassiveOSINT:
                     result = sock.connect_ex((target, port))
                     sock.close()
                     return port if result == 0 else None
-                except:
+                except Exception as e:
+                    logger.debug(f"Port check failed for {target}:{port}: {e}")
                     return None
             
             with ThreadPoolExecutor(max_workers=10) as executor:
@@ -6228,8 +6394,8 @@ class PassiveOSINT:
                     response = self.session.get(f"{scheme}://{target}", timeout=5)
                     server = response.headers.get('Server', 'Unknown')
                     result[f'{scheme}_server'] = server
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"HTTP server detection failed for {scheme}://{target}: {e}")
             
             return result
         except Exception as e:
@@ -6297,8 +6463,8 @@ class PassiveOSINT:
                     result[f'blacklisted_{dnsbl}'] = True
                 except socket.gaierror:
                     result[f'blacklisted_{dnsbl}'] = False
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"DNSBL check failed for {dnsbl}: {e}")
             
             if blacklisted_count > 0:
                 result['reputation'] = 'suspicious'
@@ -6315,8 +6481,8 @@ class PassiveOSINT:
                 result['is_reserved'] = ip_obj.is_reserved
                 result['is_loopback'] = ip_obj.is_loopback
                 result['is_multicast'] = ip_obj.is_multicast
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"IP address classification failed: {e}")
             
             return result
         except Exception as e:
@@ -6366,8 +6532,8 @@ class PassiveOSINT:
                     result['abuse_confidence_score'] = 25
                     result['is_hosting'] = True
                     result['hostname'] = host
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"AbuseIPDB check failed: {e}")
             
             # Check IP geolocation for suspicious regions
             try:
@@ -6384,8 +6550,8 @@ class PassiveOSINT:
                     if geo_data.get('countryCode') in high_risk_countries:
                         result['abuse_confidence_score'] += 15
                         result['risk_flag'] = 'high_risk_region'
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Geolocation risk check failed: {e}")
             
             # Combine with DNSBL results
             vt_fallback = self._virustotal_fallback(ip)
@@ -6405,7 +6571,7 @@ class PassiveOSINT:
         try:
             ipaddress.ip_address(target)
             is_ip = True
-        except:
+        except Exception:
             is_ip = False
         
         if is_ip:
@@ -6768,17 +6934,20 @@ class GUI(QMainWindow):
         # Advanced feature instances
         try:
             self.network_graph = NetworkGraphGenerator()
-        except:
+        except Exception as e:
+            logger.debug(f"Network graph initialization failed: {e}")
             self.network_graph = None
         
         try:
             self.content_classifier = ContentClassifier()
-        except:
+        except Exception as e:
+            logger.debug(f"Content classifier initialization failed: {e}")
             self.content_classifier = None
         
         try:
             self.ner = NamedEntityRecognizer()
-        except:
+        except Exception as e:
+            logger.debug(f"NER initialization failed: {e}")
             self.ner = None
         
         self.contact_harvester = ContactHarvester()
@@ -6786,12 +6955,14 @@ class GUI(QMainWindow):
         
         try:
             self.visual_analyzer = VisualAnalyzer()
-        except:
+        except Exception as e:
+            logger.debug(f"Visual analyzer initialization failed: {e}")
             self.visual_analyzer = None
         
         try:
             self.ocr_engine = OCREngine()
-        except:
+        except Exception as e:
+            logger.debug(f"OCR engine initialization failed: {e}")
             self.ocr_engine = None
         
         self.temporal_analyzer = TemporalAnalyzer()
@@ -6799,7 +6970,8 @@ class GUI(QMainWindow):
         
         try:
             self.dashboard = InteractiveDashboard()
-        except:
+        except Exception as e:
+            logger.debug(f"Dashboard initialization failed: {e}")
             self.dashboard = None
         
         # New OSINT feature instances
