@@ -96,7 +96,7 @@ The tool integrates multiple reconnaissance techniques into a single, user-frien
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/recon-tool.git
+git clone https://github.com/LeonardoParchao/recon-tool.git
 cd recon-tool
 
 # Install core dependencies
